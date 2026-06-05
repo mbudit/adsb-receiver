@@ -25,6 +25,7 @@ class ADSBDecoder(threading.Thread):
         self.pipe = PipeDecoder()
         self.batch_buffer = []
         self.last_flush_time = time.time()
+        self.aircraft_states = {} # icao -> {callsign, altitude, velocity, heading, squawk}
         
         # Live Stats (thread-safe updates)
         self.stats_lock = threading.Lock()
@@ -80,23 +81,52 @@ class ADSBDecoder(threading.Thread):
                     if res and res.get("icao"):
                         icao = res["icao"]
                         
+                        # Ensure ICAO state tracking exists
+                        if icao not in self.aircraft_states:
+                            self.aircraft_states[icao] = {
+                                "callsign": None,
+                                "altitude": None,
+                                "velocity": None,
+                                "heading": None,
+                                "squawk": None
+                            }
+                        state = self.aircraft_states[icao]
+                        
                         # Update Statistics
                         with self.stats_lock:
                             self.stats["total_msgs"] += 1
                             self.stats["active_aircraft"].add(icao)
                             self.stats["last_aircraft_seen"] = icao
                         
-                        # Log significant decodes
+                        # Cache callsign
                         if "callsign" in res and res["callsign"]:
                             c = res["callsign"].strip()
-                            with self.stats_lock:
-                                self.stats["decoded_callsigns"] += 1
-                            if self.log_callback:
-                                self.log_callback(icao, f"Callsign updated: {c}")
+                            if c:
+                                state["callsign"] = c
+                                with self.stats_lock:
+                                    self.stats["decoded_callsigns"] += 1
+                                if self.log_callback:
+                                    self.log_callback(icao, f"Callsign updated: {c}")
+                        
+                        # Cache altitude
+                        if "altitude" in res and res["altitude"] is not None:
+                            state["altitude"] = res["altitude"]
                                 
-                        if "speed" in res or "groundspeed" in res:
+                        # Cache velocity
+                        speed = res.get("groundspeed") or res.get("speed")
+                        if speed is not None:
+                            state["velocity"] = speed
                             with self.stats_lock:
                                 self.stats["decoded_velocities"] += 1
+                                
+                        # Cache heading
+                        heading = res.get("track") or res.get("heading")
+                        if heading is not None:
+                            state["heading"] = heading
+                            
+                        # Cache squawk
+                        if "squawk" in res and res["squawk"]:
+                            state["squawk"] = res["squawk"]
                                 
                         # We capture a track point when a full position (lat/lng) is resolved
                         if "latitude" in res and res["latitude"] is not None:
@@ -106,13 +136,13 @@ class ADSBDecoder(threading.Thread):
                             track_point = {
                                 "time": datetime.fromtimestamp(current_time),
                                 "icao24": icao,
-                                "callsign": res.get("callsign").strip() if res.get("callsign") else None,
+                                "callsign": state["callsign"],
                                 "lat": res["latitude"],
                                 "lng": res["longitude"],
-                                "altitude": res.get("altitude"),
-                                "velocity": res.get("groundspeed") or res.get("speed"),
-                                "heading": res.get("track") or res.get("heading"),
-                                "squawk": res.get("squawk")
+                                "altitude": res.get("altitude") if res.get("altitude") is not None else state["altitude"],
+                                "velocity": state["velocity"],
+                                "heading": state["heading"],
+                                "squawk": state["squawk"]
                             }
                             
                             self.batch_buffer.append(track_point)
