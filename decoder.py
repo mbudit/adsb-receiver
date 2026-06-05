@@ -1,0 +1,175 @@
+import threading
+import queue
+import time
+import logging
+from datetime import datetime
+from pyModeS import PipeDecoder
+
+logger = logging.getLogger("ADSBReceiver.Decoder")
+
+class ADSBDecoder(threading.Thread):
+    def __init__(self, input_queue, db_client, batch_interval=60):
+        """
+        Background thread that consumes raw hex messages from input_queue,
+        decodes them using pyModeS PipeDecoder, buffers track points,
+        and batches inserts to the database every batch_interval seconds.
+        """
+        super().__init__()
+        self.input_queue = input_queue
+        self.db_client = db_client
+        self.batch_interval = batch_interval
+        self.running = False
+        self.daemon = True
+        
+        # State tracking
+        self.pipe = PipeDecoder()
+        self.batch_buffer = []
+        self.last_flush_time = time.time()
+        
+        # Live Stats (thread-safe updates)
+        self.stats_lock = threading.Lock()
+        self.stats = {
+            "total_msgs": 0,
+            "decoded_positions": 0,
+            "decoded_callsigns": 0,
+            "decoded_velocities": 0,
+            "active_aircraft": set(),
+            "last_aircraft_seen": None,
+            "db_saves": 0,
+            "batch_size": 0
+        }
+        
+        # Callbacks for GUI
+        self.gui_update_callback = None
+        self.log_callback = None
+
+    def set_gui_callback(self, callback):
+        self.gui_update_callback = callback
+
+    def set_log_callback(self, callback):
+        self.log_callback = callback
+
+    def get_stats(self):
+        with self.stats_lock:
+            # Return copy of stats
+            stats_copy = self.stats.copy()
+            stats_copy["active_aircraft_count"] = len(self.stats["active_aircraft"])
+            return stats_copy
+
+    def run(self):
+        self.running = True
+        logger.info("ADSB Decoder thread started.")
+        if self.log_callback:
+            self.log_callback("System", "ADSB Decoder thread started.")
+            
+        while self.running:
+            try:
+                # Read from queue with a timeout to allow check of running state and flushes
+                try:
+                    raw_msg = self.input_queue.get(timeout=1.0)
+                except queue.Empty:
+                    raw_msg = None
+
+                current_time = time.time()
+                
+                if raw_msg:
+                    # Clean and decode message
+                    msg = raw_msg.replace("*", "").replace(";", "").strip()
+                    res = self.pipe.decode(msg, timestamp=current_time)
+                    
+                    if res and res.get("icao"):
+                        icao = res["icao"]
+                        
+                        # Update Statistics
+                        with self.stats_lock:
+                            self.stats["total_msgs"] += 1
+                            self.stats["active_aircraft"].add(icao)
+                            self.stats["last_aircraft_seen"] = icao
+                        
+                        # Log significant decodes
+                        if "callsign" in res and res["callsign"]:
+                            c = res["callsign"].strip()
+                            with self.stats_lock:
+                                self.stats["decoded_callsigns"] += 1
+                            if self.log_callback:
+                                self.log_callback(icao, f"Callsign updated: {c}")
+                                
+                        if "speed" in res or "groundspeed" in res:
+                            with self.stats_lock:
+                                self.stats["decoded_velocities"] += 1
+                                
+                        # We capture a track point when a full position (lat/lng) is resolved
+                        if "latitude" in res and res["latitude"] is not None:
+                            with self.stats_lock:
+                                self.stats["decoded_positions"] += 1
+                                
+                            track_point = {
+                                "time": datetime.fromtimestamp(current_time),
+                                "icao24": icao,
+                                "callsign": res.get("callsign").strip() if res.get("callsign") else None,
+                                "lat": res["latitude"],
+                                "lng": res["longitude"],
+                                "altitude": res.get("altitude"),
+                                "velocity": res.get("groundspeed") or res.get("speed"),
+                                "heading": res.get("track") or res.get("heading"),
+                                "squawk": res.get("squawk")
+                            }
+                            
+                            self.batch_buffer.append(track_point)
+                            
+                            with self.stats_lock:
+                                self.stats["batch_size"] = len(self.batch_buffer)
+                                
+                            if self.log_callback:
+                                self.log_callback(
+                                    icao, 
+                                    f"Position: {track_point['lat']:.4f}, {track_point['lng']:.4f} | Alt: {track_point['altitude'] or 'N/A'} ft"
+                                )
+                                
+                    self.input_queue.task_done()
+                
+                # Check if it's time to flush the batch to the database
+                if current_time - self.last_flush_time >= self.batch_interval:
+                    self._flush_batch()
+                    
+            except Exception as e:
+                logger.error(f"Error in decoder thread: {e}")
+                if self.log_callback:
+                    self.log_callback("Error", f"Decoder Exception: {e}")
+                    
+        # Flush any remaining items in buffer before exiting
+        if self.batch_buffer:
+            self._flush_batch()
+            
+        logger.info("ADSB Decoder thread stopped.")
+
+    def _flush_batch(self):
+        """Flushes buffered track points to the database."""
+        points_to_save = list(self.batch_buffer)
+        self.batch_buffer.clear()
+        self.last_flush_time = time.time()
+        
+        with self.stats_lock:
+            self.stats["batch_size"] = 0
+
+        if not points_to_save:
+            return
+
+        logger.info(f"Triggering database batch insert of {len(points_to_save)} points...")
+        if self.log_callback:
+            self.log_callback("Database", f"Saving batch of {len(points_to_save)} track points...")
+            
+        success = self.db_client.insert_tracks_batch(points_to_save)
+        
+        if success:
+            with self.stats_lock:
+                self.stats["db_saves"] += len(points_to_save)
+            if self.log_callback:
+                self.log_callback("Database", f"Saved {len(points_to_save)} track points successfully.")
+        else:
+            if self.log_callback:
+                self.log_callback("Database", "Failed to save batch to database (see logs).")
+
+    def stop(self):
+        self.running = False
+        logger.info("Decoder stop requested.")
