@@ -1,25 +1,28 @@
-import threading
+from PyQt6.QtCore import QThread
 import queue
 import time
 import logging
 from datetime import datetime
 from pyModeS import PipeDecoder
+from db import OfflineDatabase
 
 logger = logging.getLogger("ADSBReceiver.Decoder")
 
-class ADSBDecoder(threading.Thread):
-    def __init__(self, input_queue, db_client, batch_interval=60):
+class ADSBDecoder(QThread):
+    def __init__(self, stop_event, input_queue, db_client, batch_interval=60):
         """
-        Background thread that consumes raw hex messages from input_queue,
+        Background QThread that consumes raw hex messages from input_queue,
         decodes them using pyModeS PipeDecoder, buffers track points,
         and batches inserts to the database every batch_interval seconds.
         """
         super().__init__()
+        self.stop_event = stop_event
         self.input_queue = input_queue
         self.db_client = db_client
         self.batch_interval = batch_interval
-        self.running = False
-        self.daemon = True
+        
+        # Local offline database buffer
+        self.offline_db = OfflineDatabase()
         
         # State tracking
         self.pipe = PipeDecoder()
@@ -28,6 +31,7 @@ class ADSBDecoder(threading.Thread):
         self.aircraft_states = {} # icao -> {callsign, altitude, velocity, heading, squawk}
         
         # Live Stats (thread-safe updates)
+        import threading
         self.stats_lock = threading.Lock()
         self.stats = {
             "total_msgs": 0,
@@ -58,16 +62,15 @@ class ADSBDecoder(threading.Thread):
             return stats_copy
 
     def run(self):
-        self.running = True
         logger.info("ADSB Decoder thread started.")
         if self.log_callback:
             self.log_callback("System", "ADSB Decoder thread started.")
             
-        while self.running:
+        while not self.stop_event.is_set():
             try:
-                # Read from queue with a timeout to allow check of running state and flushes
+                # Read from queue with a timeout to check stop_event
                 try:
-                    raw_msg = self.input_queue.get(timeout=1.0)
+                    raw_msg = self.input_queue.get(timeout=0.5)
                 except queue.Empty:
                     raw_msg = None
 
@@ -172,9 +175,11 @@ class ADSBDecoder(threading.Thread):
             self._flush_batch()
             
         logger.info("ADSB Decoder thread stopped.")
+        if self.log_callback:
+            self.log_callback("System", "ADSB Decoder thread stopped.")
 
     def _flush_batch(self):
-        """Flushes buffered track points to the database."""
+        """Flushes buffered track points to the database, falling back to local SQLite if offline."""
         points_to_save = list(self.batch_buffer)
         self.batch_buffer.clear()
         self.last_flush_time = time.time()
@@ -197,9 +202,15 @@ class ADSBDecoder(threading.Thread):
             if self.log_callback:
                 self.log_callback("Database", f"Saved {len(points_to_save)} track points successfully.")
         else:
-            if self.log_callback:
-                self.log_callback("Database", "Failed to save batch to database (see logs).")
+            logger.warning("Main database offline. Buffering tracks to local SQLite...")
+            offline_success = self.offline_db.save_tracks(points_to_save)
+            if offline_success:
+                if self.log_callback:
+                    self.log_callback("Database", f"Database offline. Buffered {len(points_to_save)} tracks locally.")
+            else:
+                if self.log_callback:
+                    self.log_callback("Error", f"Failed to save {len(points_to_save)} tracks to local buffer.")
 
     def stop(self):
-        self.running = False
+        self.stop_event.set()
         logger.info("Decoder stop requested.")

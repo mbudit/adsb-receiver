@@ -28,6 +28,7 @@ SDR_PORT = int(os.getenv("ADSB_PORT", 30002))
 
 # Application Settings
 BATCH_INTERVAL_SEC = int(os.getenv("BATCH_INTERVAL_SEC", 60))
+UPLOAD_API_URL = os.getenv("UPLOAD_API_URL", "https://bytenusa.cloud/api/v1/adsb/bulk")
 
 def get_connection_string():
     return f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD}"

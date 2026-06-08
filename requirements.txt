@@ -2,3 +2,5 @@ pymodes>=3.3.0
 psycopg2-binary>=2.9.0
 python-dotenv>=1.0.0
 PyQt6>=6.4.0
+pyserial>=3.5
+requests>=2.31.0
