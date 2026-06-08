@@ -29,6 +29,7 @@ class ADSBApp:
         self.app = QApplication(sys.argv)
         self.db_client = DatabaseClient()
         self.msg_queue = queue.Queue()
+        self.sender_queue = queue.Queue()
         
         self.receiver = None  # Holds MockReceiver if replaying logs
         self.worker_manager = WorkerManager()
@@ -94,6 +95,7 @@ class ADSBApp:
             'decoder',
             DecoderWorker,
             self.msg_queue,
+            self.sender_queue,
             self.db_client,
             config.BATCH_INTERVAL_SEC
         )
@@ -143,6 +145,7 @@ class ADSBApp:
         self.worker_manager.start_worker(
             'sender',
             SenderWorker,
+            self.sender_queue,
             self.db_client,
             self.on_sender_log
         )

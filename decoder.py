@@ -9,7 +9,7 @@ from db import OfflineDatabase
 logger = logging.getLogger("ADSBReceiver.Decoder")
 
 class ADSBDecoder(QThread):
-    def __init__(self, stop_event, input_queue, db_client, batch_interval=60):
+    def __init__(self, stop_event, input_queue, sender_queue, db_client, batch_interval=60):
         """
         Background QThread that consumes raw hex messages from input_queue,
         decodes them using pyModeS PipeDecoder, buffers track points,
@@ -18,6 +18,7 @@ class ADSBDecoder(QThread):
         super().__init__()
         self.stop_event = stop_event
         self.input_queue = input_queue
+        self.sender_queue = sender_queue
         self.db_client = db_client
         self.batch_interval = batch_interval
         
@@ -105,6 +106,15 @@ class ADSBDecoder(QThread):
                             self.stats["total_msgs"] += 1
                             self.stats["active_aircraft"].add(icao)
                             self.stats["last_aircraft_seen"] = icao
+                            
+                        # Stream to sender queue if connected
+                        if self.sender_queue is not None:
+                            self.sender_queue.put({
+                                'raw_msg': raw_msg,
+                                'icao': icao,
+                                'decoded': res,
+                                'time': current_time
+                            })
                         
                         # Cache callsign
                         if "callsign" in res and res["callsign"]:

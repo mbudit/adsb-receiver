@@ -122,6 +122,7 @@ class DatabaseClient:
                     host VARCHAR(100) NOT NULL,
                     port VARCHAR(10) NOT NULL,
                     network VARCHAR(50) NOT NULL, -- 'tcp' or 'udp'
+                    format VARCHAR(50) DEFAULT 'SBS',
                     active INTEGER DEFAULT 1,
                     last_send_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -129,12 +130,18 @@ class DatabaseClient:
                 );
             """)
 
+            # Ensure format column exists if table was created before
+            self.cursor.execute("""
+                ALTER TABLE senders 
+                ADD COLUMN IF NOT EXISTS format VARCHAR(50) DEFAULT 'SBS';
+            """)
+
             # Seed default sender if none exists
             self.cursor.execute("SELECT COUNT(*) FROM senders;")
             if self.cursor.fetchone()[0] == 0:
                 self.cursor.execute("""
-                    INSERT INTO senders (name, host, port, network, active)
-                    VALUES ('Local Rebroadcaster', '127.0.0.1', '30005', 'udp', 0);
+                    INSERT INTO senders (name, host, port, network, format, active)
+                    VALUES ('Local Rebroadcaster', '127.0.0.1', '30005', 'udp', 'SBS', 0);
                 """)
                 logger.info("Seeded default senders table.")
 
@@ -299,7 +306,7 @@ class DatabaseClient:
             self.connect()
         try:
             self.cursor.execute("""
-                SELECT id, name, host, port, network 
+                SELECT id, name, host, port, network, format 
                 FROM senders 
                 WHERE active = 1;
             """)
@@ -309,7 +316,8 @@ class DatabaseClient:
                 'name': r[1],
                 'host': r[2],
                 'port': r[3],
-                'network': r[4]
+                'network': r[4],
+                'format': r[5]
             } for r in rows]
         except Exception as e:
             logger.error(f"Error fetching active senders: {e}")
@@ -322,7 +330,7 @@ class DatabaseClient:
             self.connect()
         try:
             self.cursor.execute("""
-                SELECT id, name, host, port, network, active 
+                SELECT id, name, host, port, network, active, format 
                 FROM senders 
                 ORDER BY id;
             """)
@@ -333,7 +341,8 @@ class DatabaseClient:
                 'host': r[2],
                 'port': r[3],
                 'network': r[4],
-                'active': r[5]
+                'active': r[5],
+                'format': r[6]
             } for r in rows]
         except Exception as e:
             logger.error(f"Error fetching all senders: {e}")
@@ -349,20 +358,22 @@ class DatabaseClient:
                 # Update
                 self.cursor.execute("""
                     UPDATE senders
-                    SET name=%s, host=%s, port=%s, network=%s, active=%s, updated_at=CURRENT_TIMESTAMP
+                    SET name=%s, host=%s, port=%s, network=%s, format=%s, active=%s, updated_at=CURRENT_TIMESTAMP
                     WHERE id=%s;
                 """, (
                     sender_data['name'], sender_data['host'], sender_data['port'],
-                    sender_data['network'], sender_data.get('active', 1), sender_data['id']
+                    sender_data['network'], sender_data.get('format', 'SBS'),
+                    sender_data.get('active', 1), sender_data['id']
                 ))
             else:
                 # Insert
                 self.cursor.execute("""
-                    INSERT INTO senders (name, host, port, network, active)
-                    VALUES (%s, %s, %s, %s, %s);
+                    INSERT INTO senders (name, host, port, network, format, active)
+                    VALUES (%s, %s, %s, %s, %s, %s);
                 """, (
                     sender_data['name'], sender_data['host'], sender_data['port'],
-                    sender_data['network'], sender_data.get('active', 1)
+                    sender_data['network'], sender_data.get('format', 'SBS'),
+                    sender_data.get('active', 1)
                 ))
             self.conn.commit()
             return True

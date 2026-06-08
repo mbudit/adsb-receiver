@@ -114,7 +114,7 @@ class SenderDialog(QDialog):
         super().__init__(parent)
         self.sender_data = sender_data or {}
         self.setWindowTitle("Rebroadcaster Destination" if sender_data else "Add Destination")
-        self.resize(380, 220)
+        self.resize(380, 260)
         self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
         
         layout = QVBoxLayout(self)
@@ -127,6 +127,10 @@ class SenderDialog(QDialog):
         self.net_combo.addItems(['udp', 'tcp'])
         self.net_combo.setCurrentText(self.sender_data.get('network', 'udp'))
         
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(['SBS', 'AVR', 'JSON'])
+        self.format_combo.setCurrentText(self.sender_data.get('format', 'SBS'))
+        
         self.active_check = QCheckBox("Active")
         self.active_check.setChecked(self.sender_data.get('active', 1) == 1)
         
@@ -134,6 +138,7 @@ class SenderDialog(QDialog):
         form_layout.addRow("Host IP:", self.host_input)
         form_layout.addRow("Port:", self.port_input)
         form_layout.addRow("Network Protocol:", self.net_combo)
+        form_layout.addRow("Output Format:", self.format_combo)
         form_layout.addRow("", self.active_check)
         
         layout.addLayout(form_layout)
@@ -149,6 +154,7 @@ class SenderDialog(QDialog):
             'host': self.host_input.text().strip(),
             'port': self.port_input.text().strip(),
             'network': self.net_combo.currentText(),
+            'format': self.format_combo.currentText(),
             'active': 1 if self.active_check.isChecked() else 0
         }
         if self.sender_data.get('id'):
@@ -423,8 +429,8 @@ class MainWindow(QMainWindow):
         senders_tab = QWidget()
         senders_layout = QVBoxLayout(senders_tab)
         
-        self.senders_table = QTableWidget(0, 4)
-        self.senders_table.setHorizontalHeaderLabels(["Name", "Host", "Port", "Active"])
+        self.senders_table = QTableWidget(0, 5)
+        self.senders_table.setHorizontalHeaderLabels(["Name", "Host", "Port", "Format", "Active"])
         self.senders_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.senders_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.senders_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -900,10 +906,11 @@ class MainWindow(QMainWindow):
                 name_item = QTableWidgetItem(r['name'])
                 host_item = QTableWidgetItem(r['host'])
                 port_item = QTableWidgetItem(f"{r['network'].upper()}:{r['port']}")
+                format_item = QTableWidgetItem(r.get('format', 'SBS'))
                 active_item = QTableWidgetItem("YES" if r['active'] == 1 else "NO")
                 
                 # Center align
-                for item in (name_item, host_item, port_item, active_item):
+                for item in (name_item, host_item, port_item, format_item, active_item):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     
                 name_item.setData(Qt.ItemDataRole.UserRole, r['id'])
@@ -911,7 +918,8 @@ class MainWindow(QMainWindow):
                 self.senders_table.setItem(row, 0, name_item)
                 self.senders_table.setItem(row, 1, host_item)
                 self.senders_table.setItem(row, 2, port_item)
-                self.senders_table.setItem(row, 3, active_item)
+                self.senders_table.setItem(row, 3, format_item)
+                self.senders_table.setItem(row, 4, active_item)
         except Exception as e:
             logger.error(f"Error rendering senders table: {e}")
 
