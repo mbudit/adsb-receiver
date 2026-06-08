@@ -28,7 +28,10 @@ class ADSBDecoder(QThread):
         self.pipe = PipeDecoder()
         self.batch_buffer = []
         self.last_flush_time = time.time()
-        self.aircraft_states = {} # icao -> {callsign, altitude, velocity, heading, squawk}
+        self.last_gc_time = time.time()
+        self.gc_interval = 30  # Check every 30s
+        self.state_ttl = 60  # Expire states if no messages for 60s
+        self.aircraft_states = {} # icao -> {callsign, altitude, velocity, heading, squawk, last_seen}
         
         # Live Stats (thread-safe updates)
         import threading
@@ -91,9 +94,11 @@ class ADSBDecoder(QThread):
                                 "altitude": None,
                                 "velocity": None,
                                 "heading": None,
-                                "squawk": None
+                                "squawk": None,
+                                "last_seen": current_time
                             }
                         state = self.aircraft_states[icao]
+                        state["last_seen"] = current_time
                         
                         # Update Statistics
                         with self.stats_lock:
@@ -165,6 +170,10 @@ class ADSBDecoder(QThread):
                 if current_time - self.last_flush_time >= self.batch_interval:
                     self._flush_batch()
                     
+                # Check if it's time to run stale state GC
+                if current_time - self.last_gc_time >= self.gc_interval:
+                    self._run_state_gc(current_time)
+                    
             except Exception as e:
                 logger.error(f"Error in decoder thread: {e}")
                 if self.log_callback:
@@ -210,6 +219,27 @@ class ADSBDecoder(QThread):
             else:
                 if self.log_callback:
                     self.log_callback("Error", f"Failed to save {len(points_to_save)} tracks to local buffer.")
+
+    def _run_state_gc(self, current_time):
+        """Removes aircraft states that haven't been updated for state_ttl seconds."""
+        stale_icaos = []
+        for icao, state in list(self.aircraft_states.items()):
+            last_seen = state.get("last_seen", 0)
+            if current_time - last_seen > self.state_ttl:
+                stale_icaos.append(icao)
+                
+        if stale_icaos:
+            for icao in stale_icaos:
+                self.aircraft_states.pop(icao, None)
+                
+            with self.stats_lock:
+                self.stats["active_aircraft"].difference_update(stale_icaos)
+                
+            logger.info(f"Decoder GC: Cleaned up {len(stale_icaos)} inactive aircraft from cache.")
+            if self.log_callback:
+                self.log_callback("System", f"Garbage Collector: Removed {len(stale_icaos)} inactive aircraft from cache.")
+                
+        self.last_gc_time = current_time
 
     def stop(self):
         self.stop_event.set()

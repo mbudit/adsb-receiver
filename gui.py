@@ -721,13 +721,26 @@ class MainWindow(QMainWindow):
         self.card_forwarded.val_label.setText(f"{stats.get('total_forwarded', 0):,}")
         
         # Refresh Active Skies Aircraft table
-        active_list = list(stats.get("active_aircraft", []))
+        active_list = set(stats.get("active_aircraft", []))
+        
+        # 1. Identify and remove stale rows
+        stale_icaos = [icao for icao in self.aircraft_table_data if icao not in active_list]
+        for icao in sorted(stale_icaos, key=lambda x: self.aircraft_table_data[x]['row'], reverse=True):
+            info = self.aircraft_table_data.pop(icao)
+            row_to_remove = info['row']
+            self.table.removeRow(row_to_remove)
+            
+            # Adjust remaining row indices
+            for other_icao, other_info in self.aircraft_table_data.items():
+                if other_info['row'] > row_to_remove:
+                    other_info['row'] -= 1
+        
+        # 2. Add new active ones
         for icao in active_list:
             if icao not in self.aircraft_table_data:
                 row_idx = self.table.rowCount()
                 self.table.insertRow(row_idx)
                 
-                # Create items
                 icao_item = QTableWidgetItem(icao)
                 icao_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 callsign_item = QTableWidgetItem("Scanning...")
