@@ -3,10 +3,12 @@ import queue
 import time
 import logging
 import math
+import threading
 from datetime import datetime
 import pyModeS as pms
 from pyModeS import PipeDecoder
 from db import OfflineDatabase
+import icao_ranges
 
 logger = logging.getLogger("ADSBReceiver.Decoder")
 
@@ -36,10 +38,10 @@ class ADSBDecoder(QThread):
         self.last_gc_time = time.time()
         self.gc_interval = 30  # Check every 30s
         self.state_ttl = 60  # Expire states if no messages for 60s
-        self.aircraft_states = {} # icao -> {callsign, altitude, velocity, heading, squawk, last_seen}
+        self.state_lock = threading.Lock()
+        self.aircraft_states = {} # icao -> state dict
         
         # Live Stats (thread-safe updates)
-        import threading
         self.stats_lock = threading.Lock()
         self.stats = {
             "total_msgs": 0,
@@ -134,19 +136,6 @@ class ADSBDecoder(QThread):
                                 res.pop('latitude', None)
                                 res.pop('longitude', None)
                         
-                        # Ensure ICAO state tracking exists
-                        if icao not in self.aircraft_states:
-                            self.aircraft_states[icao] = {
-                                "callsign": None,
-                                "altitude": None,
-                                "velocity": None,
-                                "heading": None,
-                                "squawk": None,
-                                "last_seen": current_time
-                            }
-                        state = self.aircraft_states[icao]
-                        state["last_seen"] = current_time
-                        
                         # Update Statistics
                         with self.stats_lock:
                             self.stats["total_msgs"] += 1
@@ -161,37 +150,89 @@ class ADSBDecoder(QThread):
                                 'decoded': res,
                                 'time': current_time
                             })
-                        
-                        # Cache callsign
-                        if "callsign" in res and res["callsign"]:
-                            c = res["callsign"].strip()
-                            if c:
-                                state["callsign"] = c
-                                with self.stats_lock:
-                                    self.stats["decoded_callsigns"] += 1
-                                if self.log_callback:
-                                    self.log_callback(icao, f"Callsign updated: {c}")
-                        
-                        # Cache altitude
-                        if "altitude" in res and res["altitude"] is not None:
-                            state["altitude"] = res["altitude"]
-                                
-                        # Cache velocity
-                        speed = res.get("groundspeed") or res.get("speed")
-                        if speed is not None:
-                            state["velocity"] = speed
-                            with self.stats_lock:
-                                self.stats["decoded_velocities"] += 1
-                                
-                        # Cache heading
-                        heading = res.get("track") or res.get("heading")
-                        if heading is not None:
-                            state["heading"] = heading
+
+                        tp_callsign = None
+                        tp_altitude = None
+                        tp_velocity = None
+                        tp_heading = None
+                        tp_squawk = None
+
+                        with self.state_lock:
+                            # Ensure ICAO state tracking exists
+                            if icao not in self.aircraft_states:
+                                country_info = icao_ranges.find_icao_range(icao)
+                                self.aircraft_states[icao] = {
+                                    "icao": icao,
+                                    "callsign": None,
+                                    "altitude": None,
+                                    "velocity": None,
+                                    "heading": None,
+                                    "squawk": None,
+                                    "lat": None,
+                                    "lng": None,
+                                    "vertical_rate": None,
+                                    "messages": 0,
+                                    "distance": None,
+                                    "country": country_info["country"],
+                                    "country_code": country_info["country_code"],
+                                    "last_seen": current_time
+                                }
+                            state = self.aircraft_states[icao]
+                            state["last_seen"] = current_time
+                            state["messages"] += 1
                             
-                        # Cache squawk
-                        if "squawk" in res and res["squawk"]:
-                            state["squawk"] = res["squawk"]
+                            # Cache callsign
+                            if "callsign" in res and res["callsign"]:
+                                c = res["callsign"].strip()
+                                if c:
+                                    state["callsign"] = c
+                                    with self.stats_lock:
+                                        self.stats["decoded_callsigns"] += 1
+                                    if self.log_callback:
+                                        self.log_callback(icao, f"Callsign updated: {c}")
+                            
+                            # Cache altitude
+                            if "altitude" in res and res["altitude"] is not None:
+                                state["altitude"] = res["altitude"]
+                                    
+                            # Cache velocity
+                            speed = res.get("groundspeed") or res.get("speed")
+                            if speed is not None:
+                                state["velocity"] = speed
+                                with self.stats_lock:
+                                    self.stats["decoded_velocities"] += 1
+                                    
+                            # Cache heading
+                            heading = res.get("track") or res.get("heading")
+                            if heading is not None:
+                                state["heading"] = heading
                                 
+                            # Cache vertical rate
+                            vr = res.get("vertical_rate")
+                            if vr is not None:
+                                state["vertical_rate"] = vr
+                                
+                            # Cache squawk
+                            if "squawk" in res and res["squawk"]:
+                                state["squawk"] = res["squawk"]
+
+                            # Cache lat/lng if present
+                            if "latitude" in res and res["latitude"] is not None:
+                                state["lat"] = res["latitude"]
+                                state["lng"] = res["longitude"]
+                                if self.antenna_coords:
+                                    ref_lat, ref_lon = self.antenna_coords
+                                    dist_km = self._haversine(ref_lat, ref_lon, state["lat"], state["lng"])
+                                    state["distance"] = round(dist_km * 0.539957, 1)
+
+                            tp_callsign = state["callsign"]
+                            tp_altitude = res.get("altitude") if res.get("altitude") is not None else state["altitude"]
+                            tp_velocity = state["velocity"]
+                            tp_heading = state["heading"]
+                            tp_squawk = state["squawk"]
+                            tp_vertical_rate = state["vertical_rate"]
+                            tp_distance = state["distance"]
+
                         # We capture a track point when a full position (lat/lng) is resolved
                         if "latitude" in res and res["latitude"] is not None:
                             with self.stats_lock:
@@ -200,13 +241,15 @@ class ADSBDecoder(QThread):
                             track_point = {
                                 "time": datetime.fromtimestamp(current_time),
                                 "icao24": icao,
-                                "callsign": state["callsign"],
+                                "callsign": tp_callsign,
                                 "lat": res["latitude"],
                                 "lng": res["longitude"],
-                                "altitude": res.get("altitude") if res.get("altitude") is not None else state["altitude"],
-                                "velocity": state["velocity"],
-                                "heading": state["heading"],
-                                "squawk": state["squawk"]
+                                "altitude": tp_altitude,
+                                "velocity": tp_velocity,
+                                "heading": tp_heading,
+                                "squawk": tp_squawk,
+                                "vertical_rate": tp_vertical_rate,
+                                "distance": tp_distance
                             }
                             
                             self.batch_buffer.append(track_point)
@@ -289,15 +332,17 @@ class ADSBDecoder(QThread):
     def _run_state_gc(self, current_time):
         """Removes aircraft states that haven't been updated for state_ttl seconds."""
         stale_icaos = []
-        for icao, state in list(self.aircraft_states.items()):
-            last_seen = state.get("last_seen", 0)
-            if current_time - last_seen > self.state_ttl:
-                stale_icaos.append(icao)
+        with self.state_lock:
+            for icao, state in list(self.aircraft_states.items()):
+                last_seen = state.get("last_seen", 0)
+                if current_time - last_seen > self.state_ttl:
+                    stale_icaos.append(icao)
+                    
+            if stale_icaos:
+                for icao in stale_icaos:
+                    self.aircraft_states.pop(icao, None)
                 
         if stale_icaos:
-            for icao in stale_icaos:
-                self.aircraft_states.pop(icao, None)
-                
             with self.stats_lock:
                 self.stats["active_aircraft"].difference_update(stale_icaos)
                 
@@ -306,6 +351,12 @@ class ADSBDecoder(QThread):
                 self.log_callback("System", f"Garbage Collector: Removed {len(stale_icaos)} inactive aircraft from cache.")
                 
         self.last_gc_time = current_time
+
+    def get_aircraft_states(self):
+        """Returns a thread-safe deep copy of the active aircraft states."""
+        import copy
+        with self.state_lock:
+            return copy.deepcopy(self.aircraft_states)
 
     def stop(self):
         self.stop_event.set()

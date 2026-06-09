@@ -14,7 +14,8 @@ class WorkerManager(QObject):
             'receiver': {'worker': None, 'stop_event': threading.Event()},
             'decoder': {'worker': None, 'stop_event': threading.Event()},
             'uploader': {'worker': None, 'stop_event': threading.Event()},
-            'sender': {'worker': None, 'stop_event': threading.Event()}
+            'sender': {'worker': None, 'stop_event': threading.Event()},
+            'web_server': {'worker': None, 'stop_event': threading.Event()}
         }
 
     def start_worker(self, worker_type, worker_class, *args):
@@ -48,7 +49,12 @@ class WorkerManager(QObject):
 
         logger.info(f"Requesting stop for worker: {worker_type}")
         worker_info['stop_event'].set()
-
+        if hasattr(worker, 'stop'):
+            try:
+                worker.stop()
+            except Exception as e:
+                logger.error(f"Error calling stop() on worker {worker_type}: {e}")
+ 
         # Stop via timer polling
         timer = QTimer(self)
         timer.timeout.connect(lambda: self._check_stop_status(worker_type, timer, callback))

@@ -5,6 +5,7 @@ import sqlite3
 import os
 from datetime import datetime
 import config
+import icao_ranges
 
 logger = logging.getLogger("ADSBReceiver.DB")
 
@@ -49,7 +50,22 @@ class DatabaseClient:
     def _ensure_table_exists(self):
         """Checks if required tables exist. If not, it creates them."""
         try:
-            # 1. Create aircraft_tracks
+            # 1. Create aircraft metadata table
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS aircraft (
+                    icao24 VARCHAR(6) PRIMARY KEY,
+                    registration VARCHAR(12),
+                    type_code VARCHAR(4),
+                    model VARCHAR(100),
+                    country VARCHAR(50),
+                    country_code VARCHAR(2),
+                    is_military BOOLEAN NOT NULL DEFAULT FALSE,
+                    first_seen TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # 2. Create aircraft_tracks
             self.cursor.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -62,16 +78,19 @@ class DatabaseClient:
                 self.cursor.execute("""
                     CREATE TABLE IF NOT EXISTS aircraft_tracks (
                         time TIMESTAMPTZ NOT NULL,
-                        icao24 VARCHAR(24) NOT NULL,
-                        callsign VARCHAR(24),
+                        icao24 VARCHAR(6) NOT NULL,
+                        callsign VARCHAR(8),
                         lat DOUBLE PRECISION NOT NULL,
                         lng DOUBLE PRECISION NOT NULL,
                         altitude DOUBLE PRECISION,
                         velocity DOUBLE PRECISION,
                         heading DOUBLE PRECISION,
-                        squawk VARCHAR(10),
+                        vertical_rate DOUBLE PRECISION,
+                        squawk VARCHAR(4),
+                        distance DOUBLE PRECISION,
                         uploaded BOOLEAN DEFAULT FALSE,
-                        PRIMARY KEY (time, icao24)
+                        PRIMARY KEY (time, icao24),
+                        CONSTRAINT FK_aircraft_tracks_aircraft FOREIGN KEY (icao24) REFERENCES aircraft(icao24) ON DELETE CASCADE
                     );
                 """)
                 # Try to create hypertable if TimescaleDB extension is active
@@ -82,11 +101,13 @@ class DatabaseClient:
                     logger.info("Created standard PostgreSQL table (TimescaleDB extension not active/available).")
             else:
                 logger.info("Table 'aircraft_tracks' verified.")
-                # Ensure uploaded column exists if table was created before
-                self.cursor.execute("""
-                    ALTER TABLE aircraft_tracks 
-                    ADD COLUMN IF NOT EXISTS uploaded BOOLEAN DEFAULT FALSE;
-                """)
+                # Ensure new columns exist if table was created before
+                self.cursor.execute("ALTER TABLE aircraft_tracks ADD COLUMN IF NOT EXISTS vertical_rate DOUBLE PRECISION;")
+                self.cursor.execute("ALTER TABLE aircraft_tracks ADD COLUMN IF NOT EXISTS distance DOUBLE PRECISION;")
+                self.cursor.execute("ALTER TABLE aircraft_tracks ADD COLUMN IF NOT EXISTS uploaded BOOLEAN DEFAULT FALSE;")
+                
+            # Create indexing helpers
+            self.cursor.execute('CREATE INDEX IF NOT EXISTS "IDX_aircraft_tracks_unsent" ON aircraft_tracks (time) WHERE (uploaded = FALSE OR uploaded IS NULL);')
 
             # 2. Create connections table
             self.cursor.execute("""
@@ -162,35 +183,65 @@ class DatabaseClient:
         if not tracks:
             return True
 
-        query = """
-            INSERT INTO aircraft_tracks (time, icao24, callsign, lat, lng, altitude, velocity, heading, squawk)
-            VALUES %s
-            ON CONFLICT (time, icao24) DO UPDATE SET
-                callsign = EXCLUDED.callsign,
-                lat = EXCLUDED.lat,
-                lng = EXCLUDED.lng,
-                altitude = EXCLUDED.altitude,
-                velocity = EXCLUDED.velocity,
-                heading = EXCLUDED.heading,
-                squawk = EXCLUDED.squawk;
-        """
-
-        values = [
-            (
-                t["time"],
-                t["icao24"],
-                t["callsign"],
-                t["lat"],
-                t["lng"],
-                t["altitude"],
-                t["velocity"],
-                t["heading"],
-                t["squawk"]
-            )
-            for t in tracks
-        ]
-
         try:
+            # 1. Extract unique ICAOs and resolve country info
+            unique_icaos = {t["icao24"] for t in tracks}
+            aircraft_values = []
+            for icao in unique_icaos:
+                c_info = icao_ranges.find_icao_range(icao)
+                aircraft_values.append((
+                    icao,
+                    c_info["country"],
+                    c_info["country_code"]
+                ))
+
+            # 2. Upsert into aircraft table
+            if aircraft_values:
+                ac_query = """
+                    INSERT INTO aircraft (icao24, country, country_code)
+                    VALUES %s
+                    ON CONFLICT (icao24) DO UPDATE SET
+                        country = EXCLUDED.country,
+                        country_code = EXCLUDED.country_code,
+                        last_seen = NOW();
+                """
+                execute_values(self.cursor, ac_query, aircraft_values)
+
+            # 3. Insert telemetry track points
+            query = """
+                INSERT INTO aircraft_tracks (time, icao24, callsign, lat, lng, altitude, velocity, heading, vertical_rate, squawk, distance, uploaded)
+                VALUES %s
+                ON CONFLICT (time, icao24) DO UPDATE SET
+                    callsign = EXCLUDED.callsign,
+                    lat = EXCLUDED.lat,
+                    lng = EXCLUDED.lng,
+                    altitude = EXCLUDED.altitude,
+                    velocity = EXCLUDED.velocity,
+                    heading = EXCLUDED.heading,
+                    vertical_rate = EXCLUDED.vertical_rate,
+                    squawk = EXCLUDED.squawk,
+                    distance = EXCLUDED.distance,
+                    uploaded = EXCLUDED.uploaded;
+            """
+
+            values = [
+                (
+                    t["time"],
+                    t["icao24"],
+                    t["callsign"],
+                    t["lat"],
+                    t["lng"],
+                    t["altitude"],
+                    t["velocity"],
+                    t["heading"],
+                    t.get("vertical_rate"),
+                    t["squawk"],
+                    t.get("distance"),
+                    t.get("uploaded", False)
+                )
+                for t in tracks
+            ]
+
             execute_values(self.cursor, query, values)
             self.conn.commit()
             logger.info(f"Successfully inserted {len(tracks)} track points into database.")
@@ -419,7 +470,7 @@ class DatabaseClient:
             self.connect()
         try:
             self.cursor.execute("""
-                SELECT time, icao24, callsign, lat, lng, altitude, velocity, heading, squawk
+                SELECT time, icao24, callsign, lat, lng, altitude, velocity, heading, vertical_rate, squawk, distance
                 FROM aircraft_tracks
                 WHERE uploaded = FALSE OR uploaded IS NULL
                 ORDER BY time ASC
@@ -435,7 +486,9 @@ class DatabaseClient:
                 'altitude': r[5],
                 'velocity': r[6],
                 'heading': r[7],
-                'squawk': r[8]
+                'vertical_rate': r[8],
+                'squawk': r[9],
+                'distance': r[10]
             } for r in rows]
         except Exception as e:
             logger.error(f"Error fetching unsent tracks: {e}")
@@ -467,7 +520,7 @@ class DatabaseClient:
             self.connect()
         try:
             self.cursor.execute("""
-                SELECT time, icao24, callsign, lat, lng, altitude, velocity, heading, squawk
+                SELECT time, icao24, callsign, lat, lng, altitude, velocity, heading, vertical_rate, squawk, distance
                 FROM aircraft_tracks
                 WHERE time > %s
                 ORDER BY time ASC
@@ -483,7 +536,9 @@ class DatabaseClient:
                 'altitude': r[5],
                 'velocity': r[6],
                 'heading': r[7],
-                'squawk': r[8]
+                'vertical_rate': r[8],
+                'squawk': r[9],
+                'distance': r[10]
             } for r in rows]
         except Exception as e:
             logger.error(f"Error fetching latest tracks: {e}")
@@ -513,11 +568,24 @@ class OfflineDatabase:
                         altitude REAL,
                         velocity REAL,
                         heading REAL,
+                        vertical_rate REAL,
                         squawk TEXT,
+                        distance REAL,
                         PRIMARY KEY (time, icao24)
                     );
                 """)
                 conn.commit()
+
+            # Ensure SQLite table has new columns if it was created previously
+            with sqlite3.connect(self.db_path) as conn:
+                try:
+                    conn.execute("ALTER TABLE offline_tracks ADD COLUMN vertical_rate REAL;")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE offline_tracks ADD COLUMN distance REAL;")
+                except sqlite3.OperationalError:
+                    pass
         except Exception as e:
             logger.error(f"Failed to initialize offline database: {e}")
             
@@ -528,8 +596,8 @@ class OfflineDatabase:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.executemany("""
-                    INSERT OR REPLACE INTO offline_tracks (time, icao24, callsign, lat, lng, altitude, velocity, heading, squawk)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    INSERT OR REPLACE INTO offline_tracks (time, icao24, callsign, lat, lng, altitude, velocity, heading, vertical_rate, squawk, distance)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """, [
                     (
                         t['time'].isoformat() if hasattr(t['time'], 'isoformat') else str(t['time']),
@@ -540,7 +608,9 @@ class OfflineDatabase:
                         t.get('altitude'),
                         t.get('velocity'),
                         t.get('heading'),
-                        t.get('squawk')
+                        t.get('vertical_rate'),
+                        t.get('squawk'),
+                        t.get('distance')
                     )
                     for t in tracks
                 ])
@@ -555,7 +625,7 @@ class OfflineDatabase:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT time, icao24, callsign, lat, lng, altitude, velocity, heading, squawk
+                    SELECT time, icao24, callsign, lat, lng, altitude, velocity, heading, vertical_rate, squawk, distance
                     FROM offline_tracks
                     ORDER BY time ASC
                     LIMIT ?;
@@ -576,7 +646,9 @@ class OfflineDatabase:
                         'altitude': r[5],
                         'velocity': r[6],
                         'heading': r[7],
-                        'squawk': r[8]
+                        'vertical_rate': r[8],
+                        'squawk': r[9],
+                        'distance': r[10]
                     })
                 return tracks
         except Exception as e:

@@ -23,6 +23,7 @@ from workers.receiver_worker import ReceiverWorker
 from workers.decoder_worker import DecoderWorker
 from workers.uploader_worker import UploaderWorker
 from workers.sender_worker import SenderWorker
+from workers.web_server_worker import WebServerWorker
 
 class ADSBApp:
     def __init__(self):
@@ -106,6 +107,16 @@ class ADSBApp:
         if dec_worker:
             dec_worker.set_log_callback(self.on_decoder_log)
 
+        # Start Web Server Worker
+        self.worker_manager.start_worker(
+            'web_server',
+            WebServerWorker,
+            config.WEB_SERVER_HOST,
+            config.WEB_SERVER_PORT,
+            dec_worker,
+            self.on_web_server_log
+        )
+
         # 3. Start Ingestion Feeds
         if mock_mode:
             # Use the local log file for simulation
@@ -180,6 +191,10 @@ class ADSBApp:
 
     def on_sender_log(self, source, message):
         """Forwards sender/forwarder logs to GUI."""
+        self.window.queue_log(source, message)
+
+    def on_web_server_log(self, source, message):
+        """Forwards web server logs to GUI."""
         self.window.queue_log(source, message)
 
     def stop_acquisition(self):
