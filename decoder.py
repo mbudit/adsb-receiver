@@ -2,14 +2,16 @@ from PyQt6.QtCore import QThread
 import queue
 import time
 import logging
+import math
 from datetime import datetime
+import pyModeS as pms
 from pyModeS import PipeDecoder
 from db import OfflineDatabase
 
 logger = logging.getLogger("ADSBReceiver.Decoder")
 
 class ADSBDecoder(QThread):
-    def __init__(self, stop_event, input_queue, sender_queue, db_client, batch_interval=60):
+    def __init__(self, stop_event, input_queue, sender_queue, db_client, batch_interval=60, antenna_coords=None, max_range_km=500.0):
         """
         Background QThread that consumes raw hex messages from input_queue,
         decodes them using pyModeS PipeDecoder, buffers track points,
@@ -21,6 +23,8 @@ class ADSBDecoder(QThread):
         self.sender_queue = sender_queue
         self.db_client = db_client
         self.batch_interval = batch_interval
+        self.antenna_coords = antenna_coords
+        self.max_range_km = max_range_km
         
         # Local offline database buffer
         self.offline_db = OfflineDatabase()
@@ -87,6 +91,48 @@ class ADSBDecoder(QThread):
                     
                     if res and res.get("icao"):
                         icao = res["icao"]
+                        
+                        # Local CPR fallback decoding if global CPR is not ready but coordinates exist raw
+                        if 'cpr_lat' in res and 'latitude' not in res and self.antenna_coords:
+                            ref_lat, ref_lon = self.antenna_coords
+                            tc = res.get('typecode')
+                            try:
+                                decoded_pos = None
+                                # Surface CPR decoding (typecode 5-8)
+                                if tc in [5, 6, 7, 8]:
+                                    decoded_pos = pms.decode(msg, surface_ref=(ref_lat, ref_lon))
+                                # Airborne CPR decoding (typecode 9-18, 20-22)
+                                elif tc in list(range(9, 19)) + [20, 21, 22]:
+                                    decoded_pos = pms.decode(msg, reference=(ref_lat, ref_lon))
+                                
+                                if decoded_pos and 'latitude' in decoded_pos and 'longitude' in decoded_pos:
+                                    res['latitude'] = decoded_pos['latitude']
+                                    res['longitude'] = decoded_pos['longitude']
+                                    logger.debug(f"Decoder: CPR locally decoded {icao} using reference: "
+                                                 f"({res['latitude']:.4f}, {res['longitude']:.4f})")
+                            except Exception as e:
+                                logger.debug(f"Decoder: Local CPR fallback failed for {icao}: {e}")
+
+                        # CPR Calibration & Range Validation Check
+                        if 'latitude' in res and res['latitude'] is not None and self.antenna_coords:
+                            lat = res['latitude']
+                            lng = res['longitude']
+                            ref_lat, ref_lon = self.antenna_coords
+                            dist_km = self._haversine(ref_lat, ref_lon, lat, lng)
+                            
+                            max_limit = self.max_range_km or 500.0
+                            if dist_km > max_limit:
+                                logger.warning(
+                                    f"CPR Calibration Alert: Aircraft {icao} position ({lat:.4f}, {lng:.4f}) "
+                                    f"exceeds max range ({dist_km:.1f} km > {max_limit} km). Discarding position."
+                                )
+                                if self.log_callback:
+                                    self.log_callback(
+                                        "System",
+                                        f"CPR Calibration: Purged position for {icao} ({dist_km:.1f} km away)"
+                                    )
+                                res.pop('latitude', None)
+                                res.pop('longitude', None)
                         
                         # Ensure ICAO state tracking exists
                         if icao not in self.aircraft_states:
@@ -229,6 +275,16 @@ class ADSBDecoder(QThread):
             else:
                 if self.log_callback:
                     self.log_callback("Error", f"Failed to save {len(points_to_save)} tracks to local buffer.")
+
+    def _haversine(self, lat1, lon1, lat2, lon2):
+        """Calculates Great-Circle distance in kilometers between two coordinates."""
+        R = 6371.0  # Earth radius in km
+        d_lat = math.radians(lat2 - lat1)
+        d_lon = math.radians(lon2 - lon1)
+        a = (math.sin(d_lat / 2.0) ** 2 +
+             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * (math.sin(d_lon / 2.0) ** 2))
+        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+        return R * c
 
     def _run_state_gc(self, current_time):
         """Removes aircraft states that haven't been updated for state_ttl seconds."""

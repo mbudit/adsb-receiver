@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QDialog, QComboBox, QDialogButtonBox, QMessageBox
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont, QColor, QTextCursor
+from PyQt6.QtGui import QFont, QColor, QTextCursor, QDoubleValidator
 import queue
 from datetime import datetime
 
@@ -350,11 +350,31 @@ class MainWindow(QMainWindow):
         settings_form.setContentsMargins(10, 15, 10, 10)
         
         self.batch_interval_input = QLineEdit(str(self.config.BATCH_INTERVAL_SEC))
+        
+        # Antenna Coordinates & Range Input with Validators
+        self.antenna_lat_input = QLineEdit(str(self.config.ANTENNA_LAT))
+        lat_val = QDoubleValidator(-90.0, 90.0, 6, self)
+        lat_val.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.antenna_lat_input.setValidator(lat_val)
+        
+        self.antenna_lon_input = QLineEdit(str(self.config.ANTENNA_LON))
+        lon_val = QDoubleValidator(-180.0, 180.0, 6, self)
+        lon_val.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.antenna_lon_input.setValidator(lon_val)
+        
+        self.max_range_input = QLineEdit(str(self.config.MAX_RECEIVER_RANGE_KM))
+        range_val = QDoubleValidator(0.0, 5000.0, 2, self)
+        range_val.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.max_range_input.setValidator(range_val)
+        
         self.mock_checkbox = QCheckBox("Simulate inputs using local log file")
         self.mock_checkbox.setChecked(False)
         self.mock_checkbox.stateChanged.connect(self.toggle_mock_mode)
         
         settings_form.addRow("Batch Interval (s):", self.batch_interval_input)
+        settings_form.addRow("Antenna Latitude:", self.antenna_lat_input)
+        settings_form.addRow("Antenna Longitude:", self.antenna_lon_input)
+        settings_form.addRow("Max Range (km):", self.max_range_input)
         settings_form.addRow("", self.mock_checkbox)
         controls_layout.addWidget(settings_group)
         
@@ -583,6 +603,11 @@ class MainWindow(QMainWindow):
         self.config.DB_PASSWORD = self.db_pass_input.text()
         self.config.BATCH_INTERVAL_SEC = int(self.batch_interval_input.text())
         
+        # Save Antenna coordinates & Range
+        self.config.ANTENNA_LAT = float(self.antenna_lat_input.text()) if self.antenna_lat_input.text() else 0.0
+        self.config.ANTENNA_LON = float(self.antenna_lon_input.text()) if self.antenna_lon_input.text() else 0.0
+        self.config.MAX_RECEIVER_RANGE_KM = float(self.max_range_input.text()) if self.max_range_input.text() else 500.0
+        
         mock_mode = self.mock_checkbox.isChecked()
         
         # Disable editing during acquisition
@@ -592,6 +617,9 @@ class MainWindow(QMainWindow):
         self.db_user_input.setEnabled(False)
         self.db_pass_input.setEnabled(False)
         self.batch_interval_input.setEnabled(False)
+        self.antenna_lat_input.setEnabled(False)
+        self.antenna_lon_input.setEnabled(False)
+        self.max_range_input.setEnabled(False)
         self.mock_checkbox.setEnabled(False)
         
         self.add_conn_btn.setEnabled(False)
@@ -621,6 +649,9 @@ class MainWindow(QMainWindow):
         self.db_user_input.setEnabled(True)
         self.db_pass_input.setEnabled(True)
         self.batch_interval_input.setEnabled(True)
+        self.antenna_lat_input.setEnabled(True)
+        self.antenna_lon_input.setEnabled(True)
+        self.max_range_input.setEnabled(True)
         self.mock_checkbox.setEnabled(True)
         
         if not mock_mode:

@@ -91,13 +91,16 @@ class ADSBApp:
             return
             
         # 2. Start ADS-B Decoder Worker
+        antenna_coords = (config.ANTENNA_LAT, config.ANTENNA_LON) if (config.ANTENNA_LAT != 0.0 or config.ANTENNA_LON != 0.0) else None
         self.worker_manager.start_worker(
             'decoder',
             DecoderWorker,
             self.msg_queue,
             self.sender_queue,
             self.db_client,
-            config.BATCH_INTERVAL_SEC
+            config.BATCH_INTERVAL_SEC,
+            antenna_coords,
+            config.MAX_RECEIVER_RANGE_KM
         )
         dec_worker = self.worker_manager.workers['decoder']['worker']
         if dec_worker:

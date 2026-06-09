@@ -30,6 +30,11 @@ SDR_PORT = int(os.getenv("ADSB_PORT", 30002))
 BATCH_INTERVAL_SEC = int(os.getenv("BATCH_INTERVAL_SEC", 60))
 UPLOAD_API_URL = os.getenv("UPLOAD_API_URL", "https://bytenusa.cloud/api/v1/adsb/bulk")
 
+# Antenna Reference Coordinates & Calibration
+ANTENNA_LAT = float(os.getenv("ANTENNA_LAT", 0.0))
+ANTENNA_LON = float(os.getenv("ANTENNA_LON", 0.0))
+MAX_RECEIVER_RANGE_KM = float(os.getenv("MAX_RECEIVER_RANGE_KM", 500.0))
+
 def get_connection_string():
     return f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD}"
 
@@ -37,5 +42,7 @@ def get_status_summary():
     return {
         "sdr": f"{SDR_HOST}:{SDR_PORT}",
         "db": f"{DB_HOST}:{DB_PORT}/{DB_NAME}",
-        "batch_interval": f"{BATCH_INTERVAL_SEC}s"
+        "batch_interval": f"{BATCH_INTERVAL_SEC}s",
+        "antenna": f"{ANTENNA_LAT:.4f}, {ANTENNA_LON:.4f}" if (ANTENNA_LAT != 0.0 or ANTENNA_LON != 0.0) else "Not Set"
     }
+
