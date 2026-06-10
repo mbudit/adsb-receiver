@@ -78,20 +78,27 @@ class ADSBApp:
             
         return stats
 
-    def start_acquisition(self, mock_mode=False):
-        logger.info("Starting acquisition...")
-        self.window.queue_log("System", "Starting database connection...")
+    def start_acquisition(self, mock_mode=False, enable_db=True, enable_sender=True, enable_feeder=True):
+        logger.info(f"Starting acquisition (mock={mock_mode}, enable_db={enable_db}, enable_sender={enable_sender}, enable_feeder={enable_feeder})...")
         
-        # 1. Connect to Database
-        db_connected = self.db_client.connect()
-        self.window.update_db_status(db_connected)
+        # 1. Connect to Database (only required if enable_db is True OR mock_mode is False and we need connections/senders list)
+        db_required = enable_db or (not mock_mode and (enable_feeder or enable_sender))
+        db_connected = False
         
-        if not db_connected:
-            self.window.queue_log("Error", "Could not connect to database. Check credentials in Settings tab.")
-            self.window.on_stop_clicked()
-            return
+        if db_required:
+            self.window.queue_log("System", "Starting database connection...")
+            db_connected = self.db_client.connect()
+            self.window.update_db_status(db_connected)
             
-        # 2. Start ADS-B Decoder Worker
+            if not db_connected:
+                self.window.queue_log("Error", "Could not connect to database. Check credentials in Settings tab.")
+                self.window.on_stop_clicked()
+                return
+        else:
+            self.window.update_db_status(False)
+            self.window.queue_log("System", "Database connection not required. Skipping connection.")
+            
+        # 2. Start ADS-B Decoder Worker (pass enable_db flag)
         antenna_coords = (config.ANTENNA_LAT, config.ANTENNA_LON) if (config.ANTENNA_LAT != 0.0 or config.ANTENNA_LON != 0.0) else None
         self.worker_manager.start_worker(
             'decoder',
@@ -101,7 +108,8 @@ class ADSBApp:
             self.db_client,
             config.BATCH_INTERVAL_SEC,
             antenna_coords,
-            config.MAX_RECEIVER_RANGE_KM
+            config.MAX_RECEIVER_RANGE_KM,
+            enable_db
         )
         dec_worker = self.worker_manager.workers['decoder']['worker']
         if dec_worker:
@@ -117,52 +125,65 @@ class ADSBApp:
             self.on_web_server_log
         )
 
-        # 3. Start Ingestion Feeds
-        if mock_mode:
-            # Use the local log file for simulation
-            log_file = r"c:\dev-projects\hidrometeo-be\adsb_murni_hex.log.txt"
-            if not os.path.exists(log_file):
-                log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "adsb_murni_hex.log.txt")
+        # 3. Start Ingestion Feeds (Feeder)
+        if enable_feeder:
+            if mock_mode:
+                # Use the local log file for simulation
+                log_file = r"c:\dev-projects\hidrometeo-be\adsb_murni_hex.log.txt"
+                if not os.path.exists(log_file):
+                    log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "adsb_murni_hex.log.txt")
+                    
+                self.window.queue_log("System", f"Starting mock stream from: {log_file}")
+                self.receiver = MockReceiver(log_file, self.msg_queue, speed_multiplier=2.0)
+                self.receiver.set_status_callback(self.on_receiver_status_change)
+                self.receiver.start()
                 
-            self.window.queue_log("System", f"Starting mock stream from: {log_file}")
-            self.receiver = MockReceiver(log_file, self.msg_queue, speed_multiplier=2.0)
-            self.receiver.set_status_callback(self.on_receiver_status_change)
-            self.receiver.start()
-            
-            # Mock worker status update for receiver to look uniform
-            self.window.worker_status_signal.emit('receiver', 'running')
+                # Mock worker status update for receiver to look uniform
+                self.window.worker_status_signal.emit('receiver', 'running')
+            else:
+                self.window.queue_log("System", "Starting receiver ingestion worker feeds...")
+                self.worker_manager.start_worker(
+                    'receiver',
+                    ReceiverWorker,
+                    self.db_client,
+                    self.msg_queue,
+                    self.on_receiver_log
+                )
+                # Update connection status indicator
+                self.window.status_signal.emit(True, "Receiver Ingestion Running")
         else:
-            self.window.queue_log("System", "Starting receiver ingestion worker feeds...")
-            self.worker_manager.start_worker(
-                'receiver',
-                ReceiverWorker,
-                self.db_client,
-                self.msg_queue,
-                self.on_receiver_log
-            )
-            # Update connection status indicator
-            self.window.status_signal.emit(True, "Receiver Ingestion Running")
+            self.window.queue_log("System", "Receiver Input Feeder is disabled. Skipping receiver feeds.")
+            self.window.worker_status_signal.emit('receiver', 'stopped')
+            self.window.status_signal.emit(False, "Feeder Disabled")
 
         # 4. Start Uploader Worker
-        self.window.queue_log("System", "Starting background API uploader...")
-        self.worker_manager.start_worker(
-            'uploader',
-            UploaderWorker,
-            self.db_client,
-            100, # batch size
-            15,  # upload interval seconds
-            self.on_uploader_log
-        )
+        if enable_db:
+            self.window.queue_log("System", "Starting background API uploader...")
+            self.worker_manager.start_worker(
+                'uploader',
+                UploaderWorker,
+                self.db_client,
+                100, # batch size
+                15,  # upload interval seconds
+                self.on_uploader_log
+            )
+        else:
+            self.window.queue_log("System", "Database logging is disabled. Skipping bulk uploader.")
+            self.window.worker_status_signal.emit('uploader', 'stopped')
 
         # 5. Start Forwarder / Rebroadcaster Worker
-        self.window.queue_log("System", "Starting background rebroadcaster...")
-        self.worker_manager.start_worker(
-            'sender',
-            SenderWorker,
-            self.sender_queue,
-            self.db_client,
-            self.on_sender_log
-        )
+        if enable_sender:
+            self.window.queue_log("System", "Starting background rebroadcaster...")
+            self.worker_manager.start_worker(
+                'sender',
+                SenderWorker,
+                self.sender_queue,
+                self.db_client,
+                self.on_sender_log
+            )
+        else:
+            self.window.queue_log("System", "Output Rebroadcasting is disabled. Skipping forwarder.")
+            self.window.worker_status_signal.emit('sender', 'stopped')
 
     def on_receiver_status_change(self, connected, message):
         """Dispatches status updates from MockReceiver to GUI main loop."""

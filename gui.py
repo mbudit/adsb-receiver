@@ -371,11 +371,23 @@ class MainWindow(QMainWindow):
         self.mock_checkbox.setChecked(False)
         self.mock_checkbox.stateChanged.connect(self.toggle_mock_mode)
         
+        self.db_checkbox = QCheckBox("Enable Database Upload")
+        self.db_checkbox.setChecked(True)
+        
+        self.sender_checkbox = QCheckBox("Enable Rebroadcaster / Forwarder")
+        self.sender_checkbox.setChecked(True)
+        
+        self.feeder_checkbox = QCheckBox("Enable Input Feeder (Ingestion)")
+        self.feeder_checkbox.setChecked(True)
+        
         settings_form.addRow("Batch Interval (s):", self.batch_interval_input)
         settings_form.addRow("Antenna Latitude:", self.antenna_lat_input)
         settings_form.addRow("Antenna Longitude:", self.antenna_lon_input)
         settings_form.addRow("Max Range (km):", self.max_range_input)
         settings_form.addRow("", self.mock_checkbox)
+        settings_form.addRow("", self.db_checkbox)
+        settings_form.addRow("", self.sender_checkbox)
+        settings_form.addRow("", self.feeder_checkbox)
         controls_layout.addWidget(settings_group)
         
         # Control Buttons
@@ -609,6 +621,9 @@ class MainWindow(QMainWindow):
         self.config.MAX_RECEIVER_RANGE_KM = float(self.max_range_input.text()) if self.max_range_input.text() else 500.0
         
         mock_mode = self.mock_checkbox.isChecked()
+        enable_db = self.db_checkbox.isChecked()
+        enable_sender = self.sender_checkbox.isChecked()
+        enable_feeder = self.feeder_checkbox.isChecked()
         
         # Disable editing during acquisition
         self.db_host_input.setEnabled(False)
@@ -621,6 +636,9 @@ class MainWindow(QMainWindow):
         self.antenna_lon_input.setEnabled(False)
         self.max_range_input.setEnabled(False)
         self.mock_checkbox.setEnabled(False)
+        self.db_checkbox.setEnabled(False)
+        self.sender_checkbox.setEnabled(False)
+        self.feeder_checkbox.setEnabled(False)
         
         self.add_conn_btn.setEnabled(False)
         self.edit_conn_btn.setEnabled(False)
@@ -636,7 +654,7 @@ class MainWindow(QMainWindow):
         self.console.clear()
         
         # Trigger start callback
-        self.start_callback(mock_mode)
+        self.start_callback(mock_mode, enable_db, enable_sender, enable_feeder)
 
     def on_stop_clicked(self):
         self.stop_callback()
@@ -653,6 +671,9 @@ class MainWindow(QMainWindow):
         self.antenna_lon_input.setEnabled(True)
         self.max_range_input.setEnabled(True)
         self.mock_checkbox.setEnabled(True)
+        self.db_checkbox.setEnabled(True)
+        self.sender_checkbox.setEnabled(True)
+        self.feeder_checkbox.setEnabled(True)
         
         if not mock_mode:
             self.add_conn_btn.setEnabled(True)

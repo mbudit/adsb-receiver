@@ -13,7 +13,7 @@ import icao_ranges
 logger = logging.getLogger("ADSBReceiver.Decoder")
 
 class ADSBDecoder(QThread):
-    def __init__(self, stop_event, input_queue, sender_queue, db_client, batch_interval=60, antenna_coords=None, max_range_km=500.0):
+    def __init__(self, stop_event, input_queue, sender_queue, db_client, batch_interval=60, antenna_coords=None, max_range_km=500.0, enable_db=True):
         """
         Background QThread that consumes raw hex messages from input_queue,
         decodes them using pyModeS PipeDecoder, buffers track points,
@@ -27,6 +27,7 @@ class ADSBDecoder(QThread):
         self.batch_interval = batch_interval
         self.antenna_coords = antenna_coords
         self.max_range_km = max_range_km
+        self.enable_db = enable_db
         
         # Local offline database buffer
         self.offline_db = OfflineDatabase()
@@ -296,6 +297,9 @@ class ADSBDecoder(QThread):
             self.stats["batch_size"] = 0
 
         if not points_to_save:
+            return
+
+        if not self.enable_db:
             return
 
         logger.info(f"Triggering database batch insert of {len(points_to_save)} points...")

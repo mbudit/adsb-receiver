@@ -6,8 +6,26 @@ import os
 from datetime import datetime
 import config
 import icao_ranges
+import requests
 
 logger = logging.getLogger("ADSBReceiver.DB")
+
+def _fetch_aircraft_metadata(icao):
+    """Fetches registration, type code, and model from hexdb.io for an ICAO hex code."""
+    icao_clean = icao.lower().strip()
+    url = f"https://hexdb.io/api/v1/aircraft/{icao_clean}"
+    try:
+        response = requests.get(url, timeout=3.0)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "registration": data.get("Registration"),
+                "type_code": data.get("ICAOTypeCode"),
+                "model": data.get("Type") or data.get("Manufacturer")
+            }
+    except Exception as e:
+        logger.debug(f"Failed to fetch metadata from hexdb.io for {icao_clean}: {e}")
+    return None
 
 class DatabaseClient:
     def __init__(self):
@@ -184,23 +202,55 @@ class DatabaseClient:
             return True
 
         try:
-            # 1. Extract unique ICAOs and resolve country info
+            # 1. Extract unique ICAOs
             unique_icaos = {t["icao24"] for t in tracks}
+
+            # Find which ICAOs already have metadata cached in the database
+            self.cursor.execute("""
+                SELECT icao24 
+                FROM aircraft 
+                WHERE icao24 = ANY(%s) AND registration IS NOT NULL;
+            """, (list(unique_icaos),))
+            cached_icaos = {row[0] for row in self.cursor.fetchall()}
+
+            # Resolve metadata for new/uncached ICAOs
             aircraft_values = []
             for icao in unique_icaos:
                 c_info = icao_ranges.find_icao_range(icao)
+                country = c_info["country"]
+                country_code = c_info["country_code"]
+                
+                registration = None
+                type_code = None
+                model = None
+
+                if icao not in cached_icaos:
+                    # Query API (blocks briefly up to 3s if slow, but usually <50ms)
+                    api_data = _fetch_aircraft_metadata(icao)
+                    if api_data:
+                        registration = api_data.get("registration")
+                        type_code = api_data.get("type_code")
+                        model = api_data.get("model")
+                        logger.info(f"API Metadata fetched for {icao}: {registration} ({type_code})")
+
                 aircraft_values.append((
                     icao,
-                    c_info["country"],
-                    c_info["country_code"]
+                    registration,
+                    type_code,
+                    model,
+                    country,
+                    country_code
                 ))
 
             # 2. Upsert into aircraft table
             if aircraft_values:
                 ac_query = """
-                    INSERT INTO aircraft (icao24, country, country_code)
+                    INSERT INTO aircraft (icao24, registration, type_code, model, country, country_code)
                     VALUES %s
                     ON CONFLICT (icao24) DO UPDATE SET
+                        registration = COALESCE(EXCLUDED.registration, aircraft.registration),
+                        type_code = COALESCE(EXCLUDED.type_code, aircraft.type_code),
+                        model = COALESCE(EXCLUDED.model, aircraft.model),
                         country = EXCLUDED.country,
                         country_code = EXCLUDED.country_code,
                         last_seen = NOW();
@@ -262,16 +312,25 @@ class DatabaseClient:
                 WHERE active = 1;
             """)
             rows = self.cursor.fetchall()
-            return [{
-                'id': r[0],
-                'name': r[1],
-                'type': r[2],
-                'network': r[3],
-                'address': r[4],
-                'port': r[5],
-                'data_port': r[6],
-                'baudrate': r[7]
-            } for r in rows]
+            logger.info(f"DB: get_active_connections returned {len(rows)} rows. Description: {[desc[0] for desc in self.cursor.description]}")
+            
+            result = []
+            for r in rows:
+                row_list = list(r)
+                if len(row_list) < 8:
+                    logger.warning(f"DB: Row has fewer than 8 columns: {row_list} (len={len(row_list)})")
+                    row_list += [None] * (8 - len(row_list))
+                result.append({
+                    'id': row_list[0],
+                    'name': row_list[1],
+                    'type': row_list[2],
+                    'network': row_list[3],
+                    'address': row_list[4],
+                    'port': row_list[5],
+                    'data_port': row_list[6],
+                    'baudrate': row_list[7]
+                })
+            return result
         except Exception as e:
             logger.error(f"Error fetching active connections: {e}")
             if self.conn:
@@ -288,17 +347,26 @@ class DatabaseClient:
                 ORDER BY id;
             """)
             rows = self.cursor.fetchall()
-            return [{
-                'id': r[0],
-                'name': r[1],
-                'type': r[2],
-                'network': r[3],
-                'address': r[4],
-                'port': r[5],
-                'data_port': r[6],
-                'baudrate': r[7],
-                'active': r[8]
-            } for r in rows]
+            logger.info(f"DB: get_all_connections returned {len(rows)} rows. Description: {[desc[0] for desc in self.cursor.description]}")
+            
+            result = []
+            for r in rows:
+                row_list = list(r)
+                if len(row_list) < 9:
+                    logger.warning(f"DB: Row has fewer than 9 columns: {row_list} (len={len(row_list)})")
+                    row_list += [None] * (9 - len(row_list))
+                result.append({
+                    'id': row_list[0],
+                    'name': row_list[1],
+                    'type': row_list[2],
+                    'network': row_list[3],
+                    'address': row_list[4],
+                    'port': row_list[5],
+                    'data_port': row_list[6],
+                    'baudrate': row_list[7],
+                    'active': row_list[8]
+                })
+            return result
         except Exception as e:
             logger.error(f"Error fetching all connections: {e}")
             if self.conn:
@@ -362,14 +430,23 @@ class DatabaseClient:
                 WHERE active = 1;
             """)
             rows = self.cursor.fetchall()
-            return [{
-                'id': r[0],
-                'name': r[1],
-                'host': r[2],
-                'port': r[3],
-                'network': r[4],
-                'format': r[5]
-            } for r in rows]
+            logger.info(f"DB: get_active_senders returned {len(rows)} rows. Description: {[desc[0] for desc in self.cursor.description]}")
+            
+            result = []
+            for r in rows:
+                row_list = list(r)
+                if len(row_list) < 6:
+                    logger.warning(f"DB: Row has fewer than 6 columns: {row_list} (len={len(row_list)})")
+                    row_list += [None] * (6 - len(row_list))
+                result.append({
+                    'id': row_list[0],
+                    'name': row_list[1],
+                    'host': row_list[2],
+                    'port': row_list[3],
+                    'network': row_list[4],
+                    'format': row_list[5]
+                })
+            return result
         except Exception as e:
             logger.error(f"Error fetching active senders: {e}")
             if self.conn:
@@ -386,15 +463,24 @@ class DatabaseClient:
                 ORDER BY id;
             """)
             rows = self.cursor.fetchall()
-            return [{
-                'id': r[0],
-                'name': r[1],
-                'host': r[2],
-                'port': r[3],
-                'network': r[4],
-                'active': r[5],
-                'format': r[6]
-            } for r in rows]
+            logger.info(f"DB: get_all_senders returned {len(rows)} rows. Description: {[desc[0] for desc in self.cursor.description]}")
+            
+            result = []
+            for r in rows:
+                row_list = list(r)
+                if len(row_list) < 7:
+                    logger.warning(f"DB: Row has fewer than 7 columns: {row_list} (len={len(row_list)})")
+                    row_list += [None] * (7 - len(row_list))
+                result.append({
+                    'id': row_list[0],
+                    'name': row_list[1],
+                    'host': row_list[2],
+                    'port': row_list[3],
+                    'network': row_list[4],
+                    'active': row_list[5],
+                    'format': row_list[6]
+                })
+            return result
         except Exception as e:
             logger.error(f"Error fetching all senders: {e}")
             if self.conn:
