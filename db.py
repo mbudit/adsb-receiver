@@ -27,11 +27,23 @@ def _fetch_aircraft_metadata(icao):
         logger.debug(f"Failed to fetch metadata from hexdb.io for {icao_clean}: {e}")
     return None
 
+import threading
+import functools
+
+def db_lock(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
 class DatabaseClient:
     def __init__(self):
         self.conn = None
         self.cursor = None
+        self.lock = threading.RLock()
 
+    @db_lock
     def connect(self):
         try:
             conn_str = config.get_connection_string()
@@ -46,6 +58,7 @@ class DatabaseClient:
             self.cursor = None
             return False
 
+    @db_lock
     def close(self):
         try:
             if self.cursor:
@@ -56,6 +69,7 @@ class DatabaseClient:
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
 
+    @db_lock
     def is_connected(self):
         if not self.conn:
             return False
@@ -65,6 +79,7 @@ class DatabaseClient:
         except Exception:
             return False
 
+    @db_lock
     def _ensure_table_exists(self):
         """Checks if required tables exist. If not, it creates them."""
         try:
@@ -190,6 +205,7 @@ class DatabaseClient:
             self.conn.rollback()
             logger.error(f"Error verifying or creating tables: {e}")
 
+    @db_lock
     def insert_tracks_batch(self, tracks):
         """Inserts a list of track updates."""
         if not self.is_connected():
@@ -302,6 +318,7 @@ class DatabaseClient:
             return False
 
     # --- Connections Management Methods ---
+    @db_lock
     def get_active_connections(self):
         if not self.is_connected():
             self.connect()
@@ -337,6 +354,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return []
 
+    @db_lock
     def get_all_connections(self):
         if not self.is_connected():
             self.connect()
@@ -373,6 +391,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return []
 
+    @db_lock
     def save_connection(self, conn_data):
         if not self.is_connected():
             self.connect()
@@ -406,6 +425,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return False
 
+    @db_lock
     def delete_connection(self, conn_id):
         if not self.is_connected():
             self.connect()
@@ -420,6 +440,7 @@ class DatabaseClient:
             return False
 
     # --- Senders Management Methods ---
+    @db_lock
     def get_active_senders(self):
         if not self.is_connected():
             self.connect()
@@ -453,6 +474,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return []
 
+    @db_lock
     def get_all_senders(self):
         if not self.is_connected():
             self.connect()
@@ -487,6 +509,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return []
 
+    @db_lock
     def save_sender(self, sender_data):
         if not self.is_connected():
             self.connect()
@@ -520,6 +543,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return False
 
+    @db_lock
     def delete_sender(self, sender_id):
         if not self.is_connected():
             self.connect()
@@ -533,6 +557,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return False
 
+    @db_lock
     def update_sender_time(self, sender_id, timestamp):
         if not self.is_connected():
             self.connect()
@@ -551,6 +576,7 @@ class DatabaseClient:
             return False
 
     # --- Data Retrieval / Upload Sync Queries ---
+    @db_lock
     def get_unsent_tracks(self, limit=100):
         if not self.is_connected():
             self.connect()
@@ -582,6 +608,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return []
 
+    @db_lock
     def mark_tracks_as_uploaded(self, track_keys):
         """Marks track updates as uploaded. track_keys is a list of dicts/tuples with time and icao24."""
         if not self.is_connected() or not track_keys:
@@ -601,6 +628,7 @@ class DatabaseClient:
                 self.conn.rollback()
             return False
 
+    @db_lock
     def get_latest_tracks_since(self, since_time, limit=500):
         if not self.is_connected():
             self.connect()
