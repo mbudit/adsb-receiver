@@ -1,165 +1,20 @@
-import sys
+import queue
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QTableWidget,
-    QTableWidgetItem, QHeaderView, QGroupBox, QFormLayout, QFrame,
-    QTabWidget, QDialog, QComboBox, QDialogButtonBox, QMessageBox
+    QTableWidgetItem, QHeaderView, QGroupBox, QFormLayout,
+    QTabWidget, QDialog, QMessageBox
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont, QColor, QTextCursor, QDoubleValidator
-import queue
-from datetime import datetime
+from PyQt6.QtGui import QTextCursor, QDoubleValidator
 
-class MutedFrame(QFrame):
-    """Custom styled frame for KPI Cards."""
-    def __init__(self, title, val_color="#00ADB5"):
-        super().__init__()
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: #1e1e1e;
-                border: 1px solid #2d2d2d;
-                border-radius: 8px;
-            }}
-        """)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        
-        self.title_label = QLabel(title)
-        self.title_label.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; text-transform: uppercase;")
-        
-        self.val_label = QLabel("N/A")
-        self.val_label.setStyleSheet(f"color: {val_color}; font-size: 20px; font-weight: bold;")
-        
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.val_label)
+from .dialogs import ConnectionDialog, SenderDialog
+from .widgets import MutedFrame
+from .styles import DARK_STYLESHEET
 
-class ConnectionDialog(QDialog):
-    """Dialog to add/edit connection feeds."""
-    def __init__(self, parent=None, conn_data=None):
-        super().__init__(parent)
-        self.conn_data = conn_data or {}
-        self.setWindowTitle("Connection Settings" if conn_data else "Add Connection")
-        self.resize(400, 300)
-        self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
-        
-        layout = QVBoxLayout(self)
-        form_layout = QFormLayout()
-        
-        self.name_input = QLineEdit(self.conn_data.get('name', ''))
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(['network', 'serial'])
-        self.type_combo.setCurrentText(self.conn_data.get('type', 'network'))
-        self.type_combo.currentTextChanged.connect(self.toggle_type_fields)
-        
-        self.net_combo = QComboBox()
-        self.net_combo.addItems(['tcp', 'udp'])
-        self.net_combo.setCurrentText(self.conn_data.get('network', 'tcp'))
-        
-        self.address_input = QLineEdit(self.conn_data.get('address', '127.0.0.1'))
-        self.port_input = QLineEdit(self.conn_data.get('port', '30002'))
-        
-        self.serial_port_input = QLineEdit(self.conn_data.get('data_port', 'COM1'))
-        self.baudrate_input = QLineEdit(self.conn_data.get('baudrate', '115200'))
-        
-        self.active_check = QCheckBox("Enabled")
-        self.active_check.setChecked(self.conn_data.get('active', 1) == 1)
-        
-        form_layout.addRow("Connection Name:", self.name_input)
-        form_layout.addRow("Type:", self.type_combo)
-        form_layout.addRow("Network Protocol:", self.net_combo)
-        form_layout.addRow("Host Address:", self.address_input)
-        form_layout.addRow("Port:", self.port_input)
-        form_layout.addRow("Serial Port (e.g. COM3):", self.serial_port_input)
-        form_layout.addRow("Baud Rate:", self.baudrate_input)
-        form_layout.addRow("", self.active_check)
-        
-        layout.addLayout(form_layout)
-        
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        
-        # Initial field toggles
-        self.toggle_type_fields(self.type_combo.currentText())
-
-    def toggle_type_fields(self, conn_type):
-        is_net = conn_type == 'network'
-        self.net_combo.setEnabled(is_net)
-        self.address_input.setEnabled(is_net)
-        self.port_input.setEnabled(is_net)
-        
-        self.serial_port_input.setEnabled(not is_net)
-        self.baudrate_input.setEnabled(not is_net)
-
-    def get_data(self):
-        data = {
-            'name': self.name_input.text().strip(),
-            'type': self.type_combo.currentText(),
-            'network': self.net_combo.currentText() if self.type_combo.currentText() == 'network' else None,
-            'address': self.address_input.text().strip() if self.type_combo.currentText() == 'network' else None,
-            'port': self.port_input.text().strip() if self.type_combo.currentText() == 'network' else None,
-            'data_port': self.serial_port_input.text().strip() if self.type_combo.currentText() == 'serial' else None,
-            'baudrate': self.baudrate_input.text().strip() if self.type_combo.currentText() == 'serial' else None,
-            'active': 1 if self.active_check.isChecked() else 0
-        }
-        if self.conn_data.get('id'):
-            data['id'] = self.conn_data['id']
-        return data
-
-class SenderDialog(QDialog):
-    """Dialog to add/edit rebroadcaster destinations."""
-    def __init__(self, parent=None, sender_data=None):
-        super().__init__(parent)
-        self.sender_data = sender_data or {}
-        self.setWindowTitle("Rebroadcaster Destination" if sender_data else "Add Destination")
-        self.resize(380, 260)
-        self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
-        
-        layout = QVBoxLayout(self)
-        form_layout = QFormLayout()
-        
-        self.name_input = QLineEdit(self.sender_data.get('name', ''))
-        self.host_input = QLineEdit(self.sender_data.get('host', '127.0.0.1'))
-        self.port_input = QLineEdit(self.sender_data.get('port', '30005'))
-        self.net_combo = QComboBox()
-        self.net_combo.addItems(['udp', 'tcp'])
-        self.net_combo.setCurrentText(self.sender_data.get('network', 'udp'))
-        
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(['SBS', 'AVR', 'JSON'])
-        self.format_combo.setCurrentText(self.sender_data.get('format', 'SBS'))
-        
-        self.active_check = QCheckBox("Active")
-        self.active_check.setChecked(self.sender_data.get('active', 1) == 1)
-        
-        form_layout.addRow("Destination Name:", self.name_input)
-        form_layout.addRow("Host IP:", self.host_input)
-        form_layout.addRow("Port:", self.port_input)
-        form_layout.addRow("Network Protocol:", self.net_combo)
-        form_layout.addRow("Output Format:", self.format_combo)
-        form_layout.addRow("", self.active_check)
-        
-        layout.addLayout(form_layout)
-        
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def get_data(self):
-        data = {
-            'name': self.name_input.text().strip(),
-            'host': self.host_input.text().strip(),
-            'port': self.port_input.text().strip(),
-            'network': self.net_combo.currentText(),
-            'format': self.format_combo.currentText(),
-            'active': 1 if self.active_check.isChecked() else 0
-        }
-        if self.sender_data.get('id'):
-            data['id'] = self.sender_data['id']
-        return data
+import logging
+logger = logging.getLogger("ADSBReceiver.GUI")
 
 class MainWindow(QMainWindow):
     # Signals to safely communicate between backend threads and UI thread
@@ -181,100 +36,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 780)
         
         # Set Dark Palette stylesheet
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #121212;
-            }
-            QWidget {
-                color: #e0e0e0;
-                font-family: 'Outfit', 'Inter', 'Segoe UI', sans-serif;
-                font-size: 13px;
-            }
-            QGroupBox {
-                border: 1px solid #2d2d2d;
-                border-radius: 6px;
-                margin-top: 12px;
-                font-weight: bold;
-                color: #00ADB5;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-            }
-            QLineEdit {
-                background-color: #1a1a1a;
-                border: 1px solid #333333;
-                border-radius: 4px;
-                padding: 6px;
-                color: #ffffff;
-            }
-            QLineEdit:focus {
-                border: 1px solid #00ADB5;
-            }
-            QPushButton {
-                background-color: #00ADB5;
-                color: #121212;
-                border: none;
-                border-radius: 4px;
-                padding: 8px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #00fff2;
-            }
-            QPushButton:disabled {
-                background-color: #2a2a2a;
-                color: #555555;
-            }
-            QCheckBox {
-                spacing: 5px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                background-color: #1a1a1a;
-                border: 1px solid #333333;
-                border-radius: 3px;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #00ADB5;
-                border: 1px solid #00ADB5;
-            }
-            QTableWidget {
-                background-color: #1e1e1e;
-                gridline-color: #2d2d2d;
-                border: 1px solid #2d2d2d;
-                border-radius: 6px;
-            }
-            QHeaderView::section {
-                background-color: #1a1a1a;
-                color: #888888;
-                padding: 6px;
-                border: 1px solid #2d2d2d;
-                font-weight: bold;
-            }
-            QTabWidget::pane {
-                border: 1px solid #2d2d2d;
-                background-color: #161616;
-                border-radius: 6px;
-            }
-            QTabBar::tab {
-                background-color: #1a1a1a;
-                border: 1px solid #2d2d2d;
-                padding: 8px 12px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-                margin-right: 2px;
-                font-weight: bold;
-                color: #888888;
-            }
-            QTabBar::tab:selected {
-                background-color: #161616;
-                color: #00ADB5;
-                border-bottom-color: #161616;
-            }
-        """)
+        self.setStyleSheet(DARK_STYLESHEET)
 
         self.init_ui()
         

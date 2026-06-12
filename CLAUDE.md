@@ -24,7 +24,7 @@ python main.py
 ### Static Analysis & Syntax Verification
 Compile and verify all Python files for syntax correctness:
 ```bash
-python -m py_compile main.py config.py db.py receiver.py decoder.py gui.py icao_ranges.py workers/worker_manager.py workers/receiver_worker.py workers/decoder_worker.py workers/uploader_worker.py workers/sender_worker.py workers/web_server_worker.py
+python -m py_compile main.py config.py receiver.py decoder.py icao_ranges.py db/__init__.py db/postgres_client.py db/offline_db.py gui/__init__.py gui/main_window.py gui/dialogs.py gui/widgets.py gui/styles.py workers/worker_manager.py workers/receiver_worker.py workers/decoder_worker.py workers/uploader_worker.py workers/sender_worker.py workers/web_server_worker.py
 ```
 
 ---
@@ -33,14 +33,22 @@ python -m py_compile main.py config.py db.py receiver.py decoder.py gui.py icao_
 
 ```
 adsb_receiver/
-├── requirements.txt      # External dependencies (PyQt6, psycopg2, python-dotenv, PyQt6, requests, fastapi, uvicorn)
+├── requirements.txt      # External dependencies (PyQt6, psycopg2, python-dotenv, requests, fastapi, uvicorn)
 ├── CLAUDE.md             # Developer instructions and guide (this file)
 ├── config.py             # Configuration manager (.env reader)
-├── db.py                 # PostgreSQL DatabaseClient, SQLite OfflineDatabase helper & seeds
+├── db/                   # Database package
+│   ├── __init__.py       # Exposes DatabaseClient, OfflineDatabase
+│   ├── postgres_client.py# PostgreSQL DatabaseClient connection and tables setup
+│   └── offline_db.py     # Local SQLite OfflineDatabase backup buffer client
 ├── receiver.py           # Network & Serial AVR hex listeners, plus simulated MockReceiver
 ├── decoder.py            # Mode S/ADS-B parser QThread and active aircraft state cache
 ├── icao_ranges.py        # ICAO 24-bit range lookup for country and code mapping
-├── gui.py                # PyQt6 window and dynamic configuration tabs (dark theme dashboard)
+├── gui/                  # GUI package
+│   ├── __init__.py       # Exposes MainWindow
+│   ├── main_window.py    # MainWindow core layout & action slots
+│   ├── dialogs.py        # ConnectionDialog & SenderDialog configuration screens
+│   ├── widgets.py        # MutedFrame styled KPI card dashboard widget
+│   └── styles.py         # DARK_STYLESHEET layout theme values
 ├── main.py               # Application entry point and coordinator
 └── workers/              # PyQt6 QThread workers engine
     ├── __init__.py
