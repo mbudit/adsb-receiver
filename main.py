@@ -35,6 +35,18 @@ class ADSBApp:
         self.receiver = None  # Holds MockReceiver if replaying logs
         self.worker_manager = WorkerManager()
         
+        # Persistent cache to retain statistics after stopping the engine
+        self.aggregated_stats = {
+            "total_msgs": 0,
+            "active_aircraft_count": 0,
+            "active_aircraft": set(),
+            "batch_size": 0,
+            "db_saves": 0,
+            "total_sent": 0,
+            "total_forwarded": 0,
+            "pending_upload_count": 0
+        }
+        
         # Instantiate main UI window
         self.window = MainWindow(
             start_callback=self.start_acquisition,
@@ -51,35 +63,60 @@ class ADSBApp:
 
     def get_system_stats(self):
         """Aggregates statistics from active workers for dashboard rendering."""
-        stats = {
+        # Check if any worker is currently running
+        workers_running = False
+        for w_info in self.worker_manager.workers.values():
+            w = w_info.get('worker')
+            if w and w.isRunning():
+                workers_running = True
+                break
+                
+        # If workers are running, update the aggregated stats
+        if workers_running:
+            stats = {
+                "total_msgs": 0,
+                "active_aircraft_count": 0,
+                "active_aircraft": set(),
+                "batch_size": 0,
+                "db_saves": 0,
+                "total_sent": 0,
+                "total_forwarded": 0,
+                "pending_upload_count": 0
+            }
+            
+            # 1. Decoder Stats
+            dec_worker = self.worker_manager.workers['decoder']['worker']
+            if dec_worker and dec_worker.isRunning():
+                stats.update(dec_worker.get_stats())
+                
+            # 2. Uploader Stats
+            up_worker = self.worker_manager.workers['uploader']['worker']
+            if up_worker and up_worker.isRunning():
+                stats.update(up_worker.get_stats())
+                
+            # 3. Sender Stats
+            send_worker = self.worker_manager.workers['sender']['worker']
+            if send_worker and send_worker.isRunning():
+                stats.update(send_worker.get_stats())
+                
+            self.aggregated_stats = stats
+            
+        return self.aggregated_stats
+
+    def start_acquisition(self, mock_mode=False, enable_db=True, enable_sender=True, enable_feeder=True):
+        logger.info(f"Starting acquisition (mock={mock_mode}, enable_db={enable_db}, enable_sender={enable_sender}, enable_feeder={enable_feeder})...")
+        
+        # Reset session statistics for the new session
+        self.aggregated_stats = {
             "total_msgs": 0,
             "active_aircraft_count": 0,
             "active_aircraft": set(),
             "batch_size": 0,
             "db_saves": 0,
             "total_sent": 0,
-            "total_forwarded": 0
+            "total_forwarded": 0,
+            "pending_upload_count": 0
         }
-        
-        # 1. Decoder Stats
-        dec_worker = self.worker_manager.workers['decoder']['worker']
-        if dec_worker and dec_worker.isRunning():
-            stats.update(dec_worker.get_stats())
-            
-        # 2. Uploader Stats
-        up_worker = self.worker_manager.workers['uploader']['worker']
-        if up_worker and up_worker.isRunning():
-            stats.update(up_worker.get_stats())
-            
-        # 3. Sender Stats
-        send_worker = self.worker_manager.workers['sender']['worker']
-        if send_worker and send_worker.isRunning():
-            stats.update(send_worker.get_stats())
-            
-        return stats
-
-    def start_acquisition(self, mock_mode=False, enable_db=True, enable_sender=True, enable_feeder=True):
-        logger.info(f"Starting acquisition (mock={mock_mode}, enable_db={enable_db}, enable_sender={enable_sender}, enable_feeder={enable_feeder})...")
         
         # 1. Connect to Database (only required if enable_db is True OR mock_mode is False and we need connections/senders list)
         db_required = enable_db or (not mock_mode and (enable_feeder or enable_sender))
