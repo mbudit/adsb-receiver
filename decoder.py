@@ -88,9 +88,13 @@ class ADSBDecoder(QThread):
                 current_time = time.time()
                 
                 if raw_msg:
-                    # Clean and decode message
-                    msg = raw_msg.replace("*", "").replace(";", "").strip()
-                    res = self.pipe.decode(msg, timestamp=current_time)
+                    res = None
+                    if raw_msg.startswith("MSG,"):
+                        res = self.parse_sbs_line(raw_msg)
+                    else:
+                        # Clean and decode message
+                        msg = raw_msg.replace("*", "").replace(";", "").strip()
+                        res = self.pipe.decode(msg, timestamp=current_time)
                     
                     if res and res.get("icao"):
                         icao = res["icao"]
@@ -361,6 +365,66 @@ class ADSBDecoder(QThread):
         import copy
         with self.state_lock:
             return copy.deepcopy(self.aircraft_states)
+
+    def parse_sbs_line(self, line):
+        """Parses an SBS-1 comma-separated text line into a decoded attributes dict."""
+        try:
+            parts = line.strip().split(',')
+            if len(parts) < 11:
+                return None
+            if parts[0] != 'MSG':
+                return None
+                
+            trans_type = int(parts[1])
+            icao = parts[4].strip().lower()
+            if len(icao) != 6:
+                return None
+                
+            res = {"icao": icao}
+            
+            if trans_type == 1:
+                if parts[10].strip():
+                    res["callsign"] = parts[10].strip()
+            elif trans_type == 2:
+                if parts[10].strip():
+                    res["callsign"] = parts[10].strip()
+                if parts[11].strip():
+                    res["altitude"] = int(float(parts[11]))
+                if parts[14].strip():
+                    res["latitude"] = float(parts[14])
+                if parts[15].strip():
+                    res["longitude"] = float(parts[15])
+            elif trans_type == 3:
+                if parts[11].strip():
+                    res["altitude"] = int(float(parts[11]))
+                if parts[14].strip():
+                    res["latitude"] = float(parts[14])
+                if parts[15].strip():
+                    res["longitude"] = float(parts[15])
+            elif trans_type == 4:
+                if parts[12].strip():
+                    res["speed"] = float(parts[12])
+                if parts[13].strip():
+                    res["track"] = float(parts[13])
+                if parts[16].strip():
+                    res["vertical_rate"] = float(parts[16])
+            elif trans_type == 5:
+                if parts[11].strip():
+                    res["altitude"] = int(float(parts[11]))
+            elif trans_type == 6:
+                if parts[17].strip():
+                    res["squawk"] = parts[17].strip()
+            elif trans_type == 7:
+                if parts[11].strip():
+                    res["altitude"] = int(float(parts[11]))
+            elif trans_type == 8:
+                if parts[11].strip():
+                    res["altitude"] = int(float(parts[11]))
+                    
+            return res
+        except Exception as e:
+            logger.debug(f"Decoder: Failed to parse SBS line: {e}")
+            return None
 
     def stop(self):
         self.stop_event.set()

@@ -109,11 +109,132 @@ class SDRReceiver(threading.Thread):
 
 # --- Multi-Protocol Receiver Helper Loops ---
 
+def detect_stream_mode(port):
+    """Detects format ('SBS', 'BEAST', or 'AVR') based on the port number."""
+    port_str = str(port)
+    if port_str.endswith("3"):
+        return "SBS"
+    elif port_str.endswith("5"):
+        return "BEAST"
+    else:
+        return "AVR"
+
+class BeastParser:
+    def __init__(self):
+        self.buffer = bytearray()
+        self.in_frame = False
+        self.msg_type = None
+        self.target_len = 0
+        self.escaped = False
+
+    def feed(self, chunk):
+        messages = []
+        i = 0
+        n = len(chunk)
+        while i < n:
+            b = chunk[i]
+            if not self.in_frame:
+                if b == 0x1a:
+                    self.in_frame = True
+                    self.buffer.clear()
+                    self.msg_type = None
+                    self.target_len = 0
+                    self.escaped = False
+                i += 1
+                continue
+
+            # Inside a frame
+            if self.msg_type is None:
+                self.msg_type = b
+                if b == 0x31:    # Mode A/C
+                    self.target_len = 9  # 6 mlat + 1 signal + 2 payload
+                elif b == 0x32:  # Mode S short
+                    self.target_len = 14 # 6 mlat + 1 signal + 7 payload
+                elif b == 0x33:  # Mode S long
+                    self.target_len = 21 # 6 mlat + 1 signal + 14 payload
+                elif b == 0x34:  # Status
+                    self.target_len = 13 # 6 mlat + 1 signal + 6 payload
+                else:
+                    self.in_frame = False
+                i += 1
+                continue
+
+            if self.escaped:
+                if b == 0x1a:
+                    self.buffer.append(0x1a)
+                    self.escaped = False
+                    i += 1
+                else:
+                    # Sync lost, restart frame using current byte as type
+                    self.in_frame = True
+                    self.buffer.clear()
+                    self.msg_type = b
+                    if b == 0x31:
+                        self.target_len = 9
+                    elif b == 0x32:
+                        self.target_len = 14
+                    elif b == 0x33:
+                        self.target_len = 21
+                    elif b == 0x34:
+                        self.target_len = 13
+                    else:
+                        self.in_frame = False
+                    self.escaped = False
+                    i += 1
+                continue
+
+            if b == 0x1a:
+                self.escaped = True
+                i += 1
+                continue
+
+            self.buffer.append(b)
+            i += 1
+
+            if len(self.buffer) == self.target_len:
+                if self.msg_type in (0x32, 0x33):
+                    payload = self.buffer[7:]
+                    avr_msg = f"*{payload.hex().upper()};"
+                    messages.append(avr_msg)
+                self.in_frame = False
+
+        return messages
+
+class TextStreamParser:
+    def __init__(self, mode='AVR'):
+        self.buffer = ""
+        self.mode = mode.upper() # 'AVR' or 'SBS'
+
+    def feed(self, chunk_str):
+        self.buffer += chunk_str
+        messages = []
+        
+        if self.mode == 'SBS':
+            if "\n" in self.buffer:
+                lines = self.buffer.split("\n")
+                self.buffer = lines.pop()
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("MSG,"):
+                        messages.append(line)
+        else:
+            if ";" in self.buffer:
+                parts = self.buffer.split(";")
+                self.buffer = parts.pop()
+                for part in parts:
+                    part = part.strip()
+                    if part.startswith("*"):
+                        messages.append(f"{part};")
+        return messages
+
 def receive_avr_tcp_client(host, port, stop_event, output_queue, log_callback=None):
-    """Connects to a remote TCP server supplying AVR messages."""
-    buffer = ""
+    """Connects to a remote TCP server supplying AVR, SBS-1, or Beast messages."""
+    mode = detect_stream_mode(port)
     if log_callback:
-        log_callback("Receiver", f"TCP Client: connecting to {host}:{port}...")
+        log_callback("Receiver", f"TCP Client: connecting to {host}:{port} ({mode} mode)...")
+
+    beast_parser = BeastParser() if mode == 'BEAST' else None
+    text_parser = TextStreamParser(mode=mode) if mode in ('AVR', 'SBS') else None
 
     while not stop_event.is_set():
         try:
@@ -131,12 +252,14 @@ def receive_avr_tcp_client(host, port, stop_event, output_queue, log_callback=No
                                 log_callback("Receiver", "TCP Client: Connection closed by remote host")
                             break
                         
-                        buffer += data.decode("utf-8", errors="ignore")
-                        while ";" in buffer:
-                            parts = buffer.split(";", 1)
-                            msg = parts[0].strip()
-                            buffer = parts[1]
-                            if msg.startswith("*"):
+                        if mode == 'BEAST':
+                            msgs = beast_parser.feed(data)
+                            for msg in msgs:
+                                output_queue.put(msg)
+                        else:
+                            chunk_str = data.decode("utf-8", errors="ignore")
+                            msgs = text_parser.feed(chunk_str)
+                            for msg in msgs:
                                 output_queue.put(msg)
                     except socket.timeout:
                         continue
@@ -149,11 +272,11 @@ def receive_avr_tcp_client(host, port, stop_event, output_queue, log_callback=No
                     break
                 time.sleep(0.1)
 
-
 def receive_avr_tcp_server(host, port, stop_event, output_queue, log_callback=None):
-    """Binds to a port acting as a TCP server waiting for client AVR feeds."""
+    """Binds to a port acting as a TCP server waiting for client feeds."""
+    mode = detect_stream_mode(port)
     if log_callback:
-        log_callback("Receiver", f"TCP Server: listening on {host}:{port}...")
+        log_callback("Receiver", f"TCP Server: listening on {host}:{port} ({mode} mode)...")
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -171,7 +294,7 @@ def receive_avr_tcp_server(host, port, stop_event, output_queue, log_callback=No
                     # Spawn client reader thread
                     client_thread = threading.Thread(
                         target=_read_tcp_client,
-                        args=(conn, stop_event, output_queue, log_callback),
+                        args=(conn, mode, stop_event, output_queue, log_callback),
                         daemon=True
                     )
                     client_thread.start()
@@ -181,9 +304,10 @@ def receive_avr_tcp_server(host, port, stop_event, output_queue, log_callback=No
         if log_callback:
             log_callback("Receiver", f"TCP Server bind error on {host}:{port}: {e}")
 
-
-def _read_tcp_client(conn, stop_event, output_queue, log_callback=None):
-    buffer = ""
+def _read_tcp_client(conn, mode, stop_event, output_queue, log_callback=None):
+    beast_parser = BeastParser() if mode == 'BEAST' else None
+    text_parser = TextStreamParser(mode=mode) if mode in ('AVR', 'SBS') else None
+    
     with conn:
         conn.settimeout(1.0)
         while not stop_event.is_set():
@@ -191,47 +315,53 @@ def _read_tcp_client(conn, stop_event, output_queue, log_callback=None):
                 data = conn.recv(4096)
                 if not data:
                     break
-                buffer += data.decode("utf-8", errors="ignore")
-                while ";" in buffer:
-                    parts = buffer.split(";", 1)
-                    msg = parts[0].strip()
-                    buffer = parts[1]
-                    if msg.startswith("*"):
+                
+                if mode == 'BEAST':
+                    msgs = beast_parser.feed(data)
+                    for msg in msgs:
+                        output_queue.put(msg)
+                else:
+                    chunk_str = data.decode("utf-8", errors="ignore")
+                    msgs = text_parser.feed(chunk_str)
+                    for msg in msgs:
                         output_queue.put(msg)
             except socket.timeout:
                 continue
             except Exception as e:
                 break
 
-
 def receive_avr_udp(host, port, stop_event, output_queue, log_callback=None):
-    """Binds to a port listening for incoming UDP packets with AVR data."""
+    """Binds to a port listening for incoming UDP packets."""
+    mode = detect_stream_mode(port)
     if log_callback:
-        log_callback("Receiver", f"UDP Server: binding {host}:{port}...")
+        log_callback("Receiver", f"UDP Server: binding {host}:{port} ({mode} mode)...")
+
+    beast_parser = BeastParser() if mode == 'BEAST' else None
+    text_parser = TextStreamParser(mode=mode) if mode in ('AVR', 'SBS') else None
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((host, port))
             sock.settimeout(1.0)
-            buffer = ""
 
             while not stop_event.is_set():
                 try:
                     data, addr = sock.recvfrom(65535)
-                    buffer += data.decode("utf-8", errors="ignore")
-                    while ";" in buffer:
-                        parts = buffer.split(";", 1)
-                        msg = parts[0].strip()
-                        buffer = parts[1]
-                        if msg.startswith("*"):
+                    if mode == 'BEAST':
+                        msgs = beast_parser.feed(data)
+                        for msg in msgs:
+                            output_queue.put(msg)
+                    else:
+                        chunk_str = data.decode("utf-8", errors="ignore")
+                        msgs = text_parser.feed(chunk_str)
+                        for msg in msgs:
                             output_queue.put(msg)
                 except socket.timeout:
                     continue
     except Exception as e:
         if log_callback:
             log_callback("Receiver", f"UDP Server error on {host}:{port}: {e}")
-
 
 def receive_avr_serial(port, baudrate, stop_event, output_queue, log_callback=None):
     """Ingests AVR data from a local Serial COM port."""
@@ -243,22 +373,21 @@ def receive_avr_serial(port, baudrate, stop_event, output_queue, log_callback=No
     if log_callback:
         log_callback("Receiver", f"Serial: opening port {port} at {baudrate} baud...")
 
+    text_parser = TextStreamParser(mode='AVR')
+
     while not stop_event.is_set():
         try:
             with serial.Serial(port=port, baudrate=baudrate, timeout=1.0) as ser:
                 if log_callback:
                     log_callback("Receiver", f"Serial: port {port} opened successfully")
-                buffer = ""
                 
                 while not stop_event.is_set():
                     if ser.in_waiting:
-                        buffer += ser.read(ser.in_waiting).decode("utf-8", errors="ignore")
-                        while ";" in buffer:
-                            parts = buffer.split(";", 1)
-                            msg = parts[0].strip()
-                            buffer = parts[1]
-                            if msg.startswith("*"):
-                                output_queue.put(msg)
+                        data = ser.read(ser.in_waiting)
+                        chunk_str = data.decode("utf-8", errors="ignore")
+                        msgs = text_parser.feed(chunk_str)
+                        for msg in msgs:
+                            output_queue.put(msg)
                     time.sleep(0.05)
         except Exception as e:
             if log_callback:
@@ -268,7 +397,6 @@ def receive_avr_serial(port, baudrate, stop_event, output_queue, log_callback=No
                 if stop_event.is_set():
                     break
                 time.sleep(0.1)
-
 
 def start_multi_receiver(db_client, stop_event, output_queue, log_callback=None):
     """Queries active database connection entries and spawns receiving helper threads."""
