@@ -1,10 +1,11 @@
 import queue
+import os
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox, QFormLayout,
-    QTabWidget, QDialog, QMessageBox
+    QTabWidget, QDialog, QMessageBox, QFileDialog, QComboBox
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QTextCursor, QDoubleValidator
@@ -133,6 +134,36 @@ class MainWindow(QMainWindow):
         self.mock_checkbox.setChecked(False)
         self.mock_checkbox.stateChanged.connect(self.toggle_mock_mode)
         
+        # Simulation File & Speed Controls
+        self.mock_file_input = QLineEdit()
+        default_log = r"c:\dev-projects\hidrometeo-be\adsb_murni_hex.log.txt"
+        if not os.path.exists(default_log):
+            default_log = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "adsb_murni_hex.log.txt")
+        self.mock_file_input.setText(default_log)
+        
+        self.mock_file_btn = QPushButton("Browse...")
+        self.mock_file_btn.clicked.connect(self.browse_mock_file)
+        self.mock_file_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3f3f46;
+                color: #ffffff;
+                padding: 4px 10px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #52525b;
+            }
+        """)
+        
+        mock_file_layout = QHBoxLayout()
+        mock_file_layout.addWidget(self.mock_file_input)
+        mock_file_layout.addWidget(self.mock_file_btn)
+        mock_file_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.mock_speed_combo = QComboBox()
+        self.mock_speed_combo.addItems(["1x", "2x", "5x", "10x", "20x", "Max Speed"])
+        self.mock_speed_combo.setCurrentIndex(1) # default 2x
+        
         self.db_checkbox = QCheckBox("Enable Database Upload")
         self.db_checkbox.setChecked(True)
         
@@ -147,6 +178,8 @@ class MainWindow(QMainWindow):
         settings_form.addRow("Antenna Longitude:", self.antenna_lon_input)
         settings_form.addRow("Max Range (km):", self.max_range_input)
         settings_form.addRow("", self.mock_checkbox)
+        settings_form.addRow("Simulation Log File:", mock_file_layout)
+        settings_form.addRow("Simulation Speed:", self.mock_speed_combo)
         settings_form.addRow("", self.db_checkbox)
         settings_form.addRow("", self.sender_checkbox)
         settings_form.addRow("", self.feeder_checkbox)
@@ -268,7 +301,27 @@ class MainWindow(QMainWindow):
         db_form.addRow("Username:", self.db_user_input)
         db_form.addRow("Password:", self.db_pass_input)
         
+        self.test_db_btn = QPushButton("Test Connection")
+        self.test_db_btn.clicked.connect(self.test_db_connection)
+        self.test_db_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #a855f7;
+                color: #ffffff;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #c084fc;
+            }
+            QPushButton:disabled {
+                background-color: #3f3f46;
+                color: #a1a1aa;
+            }
+        """)
+        
         db_layout.addLayout(db_form)
+        db_layout.addWidget(self.test_db_btn)
         db_layout.addStretch()
         
         self.tab_widget.addTab(db_tab, "Database")
@@ -358,6 +411,7 @@ class MainWindow(QMainWindow):
         
         right_layout.addLayout(mid_layout, stretch=3)
         main_layout.addLayout(right_layout, stretch=2)
+        self.update_mock_inputs_state()
 
     def toggle_mock_mode(self, state):
         is_checked = state == Qt.CheckState.Checked.value
@@ -367,6 +421,24 @@ class MainWindow(QMainWindow):
         self.edit_conn_btn.setEnabled(not is_checked)
         self.delete_conn_btn.setEnabled(not is_checked)
         self.toggle_conn_btn.setEnabled(not is_checked)
+        self.update_mock_inputs_state()
+
+    def update_mock_inputs_state(self):
+        is_mock = self.mock_checkbox.isChecked()
+        self.mock_file_input.setEnabled(is_mock)
+        self.mock_file_btn.setEnabled(is_mock)
+        self.mock_speed_combo.setEnabled(is_mock)
+
+    def browse_mock_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Simulation Log File",
+            os.path.dirname(self.mock_file_input.text()) if self.mock_file_input.text() else "",
+            "Log Files (*.log *.txt);;All Files (*)"
+        )
+        if file_path:
+            self.mock_file_input.setText(file_path)
+
 
     def on_start_clicked(self):
         # Apply database connection changes
@@ -398,6 +470,9 @@ class MainWindow(QMainWindow):
         self.antenna_lon_input.setEnabled(False)
         self.max_range_input.setEnabled(False)
         self.mock_checkbox.setEnabled(False)
+        self.mock_file_input.setEnabled(False)
+        self.mock_file_btn.setEnabled(False)
+        self.mock_speed_combo.setEnabled(False)
         self.db_checkbox.setEnabled(False)
         self.sender_checkbox.setEnabled(False)
         self.feeder_checkbox.setEnabled(False)
@@ -415,8 +490,28 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.console.clear()
         
+        # Get simulation settings
+        mock_file = self.mock_file_input.text()
+        speed_text = self.mock_speed_combo.currentText()
+        speed_map = {
+            "1x": 1.0,
+            "2x": 2.0,
+            "5x": 5.0,
+            "10x": 10.0,
+            "20x": 20.0,
+            "Max Speed": 1000.0
+        }
+        mock_speed = speed_map.get(speed_text, 1.0)
+        
         # Trigger start callback
-        self.start_callback(mock_mode, enable_db, enable_sender, enable_feeder)
+        self.start_callback(
+            mock_mode=mock_mode,
+            enable_db=enable_db,
+            enable_sender=enable_sender,
+            enable_feeder=enable_feeder,
+            mock_file_path=mock_file,
+            mock_speed=mock_speed
+        )
 
     def on_stop_clicked(self):
         self.stop_callback()
@@ -433,6 +528,7 @@ class MainWindow(QMainWindow):
         self.antenna_lon_input.setEnabled(True)
         self.max_range_input.setEnabled(True)
         self.mock_checkbox.setEnabled(True)
+        self.update_mock_inputs_state()
         self.db_checkbox.setEnabled(True)
         self.sender_checkbox.setEnabled(True)
         self.feeder_checkbox.setEnabled(True)
@@ -537,8 +633,35 @@ class MainWindow(QMainWindow):
         
         # Sync and Forwarder counts
         pending_buf = stats.get("pending_upload_count", 0)
-        self.card_uploaded.val_label.setText(f"{stats.get('total_sent', 0):,} ({pending_buf})")
+        db_size = stats.get("offline_db_size", "0 B")
+        self.card_uploaded.val_label.setText(f"{stats.get('total_sent', 0):,} ({pending_buf} / {db_size})")
         self.card_forwarded.val_label.setText(f"{stats.get('total_forwarded', 0):,}")
+        
+        # Update TimescaleDB Ingestion Card connection states dynamically
+        db_online = stats.get("db_online", False)
+        
+        if not hasattr(self, 'flash_toggle'):
+            self.flash_toggle = False
+        self.flash_toggle = not self.flash_toggle
+
+        if self.stop_btn.isEnabled():
+            if db_online:
+                if pending_buf > 0:
+                    self.card_db_status.val_label.setText("Syncing")
+                    self.card_db_status.val_label.setStyleSheet("color: #ffd600; font-size: 20px; font-weight: bold;")
+                else:
+                    self.card_db_status.val_label.setText("Online")
+                    self.card_db_status.val_label.setStyleSheet("color: #00e676; font-size: 20px; font-weight: bold;")
+            else:
+                if pending_buf > 0:
+                    self.card_db_status.val_label.setText("Buffering")
+                    if self.flash_toggle:
+                        self.card_db_status.val_label.setStyleSheet("color: #f97316; font-size: 20px; font-weight: bold;")
+                    else:
+                        self.card_db_status.val_label.setStyleSheet("color: #3f3f46; font-size: 20px; font-weight: bold;")
+                else:
+                    self.card_db_status.val_label.setText("Offline")
+                    self.card_db_status.val_label.setStyleSheet("color: #ff5252; font-size: 20px; font-weight: bold;")
         
         # Refresh Active Skies Aircraft table
         active_list = set(stats.get("active_aircraft", []))
@@ -594,6 +717,45 @@ class MainWindow(QMainWindow):
             item = self.table.item(row, 2)
             if item:
                 item.setText(ts)
+
+    def test_db_connection(self):
+        host = self.db_host_input.text().strip()
+        port_str = self.db_port_input.text().strip()
+        name = self.db_name_input.text().strip()
+        user = self.db_user_input.text().strip()
+        password = self.db_pass_input.text()
+
+        if not host or not port_str or not name or not user:
+            QMessageBox.warning(self, "Validation Error", "All database fields except password must be filled out.")
+            return
+
+        try:
+            port = int(port_str)
+        except ValueError:
+            QMessageBox.warning(self, "Validation Error", "Port must be a valid integer.")
+            return
+
+        self.test_db_btn.setEnabled(False)
+        self.test_db_btn.setText("Testing...")
+        self.repaint()
+
+        import psycopg2
+        try:
+            conn = psycopg2.connect(
+                host=host,
+                port=port,
+                database=name,
+                user=user,
+                password=password,
+                connect_timeout=3
+            )
+            conn.close()
+            QMessageBox.information(self, "Success", "Database connection successful!")
+        except Exception as e:
+            QMessageBox.critical(self, "Connection Failed", f"Could not connect to database:\n{e}")
+        finally:
+            self.test_db_btn.setEnabled(True)
+            self.test_db_btn.setText("Test Connection")
 
     # --- Connections Management UI callbacks ---
 

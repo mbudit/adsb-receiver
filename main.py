@@ -13,7 +13,7 @@ logger = logging.getLogger("ADSBReceiver.Main")
 
 # Import local application modules
 import config
-from db import DatabaseClient
+from db import DatabaseClient, OfflineDatabase
 from receiver import MockReceiver
 from gui import MainWindow
 
@@ -29,6 +29,7 @@ class ADSBApp:
     def __init__(self):
         self.app = QApplication(sys.argv)
         self.db_client = DatabaseClient()
+        self.offline_db = OfflineDatabase()
         self.msg_queue = queue.Queue()
         self.sender_queue = queue.Queue()
         
@@ -101,10 +102,17 @@ class ADSBApp:
                 
             self.aggregated_stats = stats
             
+        try:
+            self.aggregated_stats["pending_upload_count"] = self.offline_db.get_pending_count()
+            self.aggregated_stats["offline_db_size"] = self.offline_db.get_db_file_size()
+        except Exception:
+            pass
+            
+        self.aggregated_stats["db_online"] = self.db_client.online_status
         return self.aggregated_stats
 
-    def start_acquisition(self, mock_mode=False, enable_db=True, enable_sender=True, enable_feeder=True):
-        logger.info(f"Starting acquisition (mock={mock_mode}, enable_db={enable_db}, enable_sender={enable_sender}, enable_feeder={enable_feeder})...")
+    def start_acquisition(self, mock_mode=False, enable_db=True, enable_sender=True, enable_feeder=True, mock_file_path=None, mock_speed=1.0):
+        logger.info(f"Starting acquisition (mock={mock_mode}, enable_db={enable_db}, enable_sender={enable_sender}, enable_feeder={enable_feeder}, mock_file={mock_file_path}, mock_speed={mock_speed})...")
         
         # Reset session statistics for the new session
         self.aggregated_stats = {
@@ -165,13 +173,13 @@ class ADSBApp:
         # 3. Start Ingestion Feeds (Feeder)
         if enable_feeder:
             if mock_mode:
-                # Use the local log file for simulation
-                log_file = r"c:\dev-projects\hidrometeo-be\adsb_murni_hex.log.txt"
+                # Use the provided log file for simulation
+                log_file = mock_file_path if mock_file_path else r"c:\dev-projects\hidrometeo-be\adsb_murni_hex.log.txt"
                 if not os.path.exists(log_file):
                     log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "adsb_murni_hex.log.txt")
                     
-                self.window.queue_log("System", f"Starting mock stream from: {log_file}")
-                self.receiver = MockReceiver(log_file, self.msg_queue, speed_multiplier=2.0)
+                self.window.queue_log("System", f"Starting mock stream from: {log_file} at {mock_speed}x speed")
+                self.receiver = MockReceiver(log_file, self.msg_queue, speed_multiplier=mock_speed)
                 self.receiver.set_status_callback(self.on_receiver_status_change)
                 self.receiver.start()
                 

@@ -38,6 +38,7 @@ class DatabaseClient:
         self.conn = None
         self.cursor = None
         self.lock = threading.RLock()
+        self.online_status = False
 
     @db_lock
     def connect(self):
@@ -47,11 +48,13 @@ class DatabaseClient:
             self.cursor = self.conn.cursor()
             logger.info("Successfully connected to the database.")
             self._ensure_table_exists()
+            self.online_status = True
             return True
         except Exception as e:
             logger.error(f"Failed to connect to the database: {e}")
             self.conn = None
             self.cursor = None
+            self.online_status = False
             return False
 
     @db_lock
@@ -62,17 +65,22 @@ class DatabaseClient:
             if self.conn:
                 self.conn.close()
             logger.info("Database connection closed.")
+            self.online_status = False
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
+            self.online_status = False
 
     @db_lock
     def is_connected(self):
         if not self.conn:
+            self.online_status = False
             return False
         try:
             self.cursor.execute("SELECT 1;")
+            self.online_status = True
             return True
         except Exception:
+            self.online_status = False
             return False
 
     @db_lock
@@ -208,6 +216,7 @@ class DatabaseClient:
             logger.warning("Not connected to the database. Attempting reconnect...")
             if not self.connect():
                 logger.error("Database reconnect failed. Batch data lost.")
+                self.online_status = False
                 return False
 
         if not tracks:
@@ -307,10 +316,12 @@ class DatabaseClient:
             execute_values(self.cursor, query, values)
             self.conn.commit()
             logger.info(f"Successfully inserted {len(tracks)} track points into database.")
+            self.online_status = True
             return True
         except Exception as e:
             self.conn.rollback()
             logger.error(f"Failed to batch insert tracks: {e}")
+            self.online_status = False
             return False
 
     # --- Connections Management Methods ---

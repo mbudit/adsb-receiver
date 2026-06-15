@@ -141,3 +141,18 @@ class OfflineDatabase:
         except Exception as e:
             logger.error(f"Error counting offline buffer: {e}")
             return 0
+
+    def get_db_file_size(self):
+        try:
+            if os.path.exists(self.db_path):
+                size_bytes = os.path.getsize(self.db_path)
+                if size_bytes < 1024:
+                    return f"{size_bytes} B"
+                elif size_bytes < 1024 * 1024:
+                    return f"{size_bytes / 1024:.1f} KB"
+                else:
+                    return f"{size_bytes / (1024 * 1024):.1f} MB"
+            return "0 B"
+        except Exception:
+            return "N/A"
+
