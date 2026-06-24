@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QDialog, QMessageBox, QFileDialog, QComboBox
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QTextCursor, QDoubleValidator
+from PyQt6.QtGui import QTextCursor, QDoubleValidator, QIcon
 
 from .dialogs import ConnectionDialog, SenderDialog
 from .widgets import MutedFrame
@@ -35,6 +35,11 @@ class MainWindow(QMainWindow):
         
         self.setWindowTitle("ADS-B Receiver & Decoder (Worker Engine)")
         self.resize(1200, 780)
+        
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logo.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         
         # Set Dark Palette stylesheet
         self.setStyleSheet(DARK_STYLESHEET)

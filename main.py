@@ -28,6 +28,13 @@ from workers.web_server_worker import WebServerWorker
 class ADSBApp:
     def __init__(self):
         self.app = QApplication(sys.argv)
+        
+        # Set application icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        if os.path.exists(icon_path):
+            from PyQt6.QtGui import QIcon
+            self.app.setWindowIcon(QIcon(icon_path))
+            
         self.db_client = DatabaseClient()
         self.offline_db = OfflineDatabase()
         self.msg_queue = queue.Queue()
