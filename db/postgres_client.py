@@ -6,12 +6,18 @@ import threading
 import functools
 import config
 import icao_ranges
+import re
 
 logger = logging.getLogger("ADSBReceiver.DB")
 
 def _fetch_aircraft_metadata(icao):
     """Fetches registration, type code, and model from hexdb.io for an ICAO hex code."""
+    if not isinstance(icao, str):
+        return None
     icao_clean = icao.lower().strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", icao_clean):
+        logger.warning(f"Invalid ICAO '{icao_clean}' passed to _fetch_aircraft_metadata. Discarding query.")
+        return None
     url = f"https://hexdb.io/api/v1/aircraft/{icao_clean}"
     try:
         response = requests.get(url, timeout=3.0)
