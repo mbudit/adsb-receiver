@@ -49,9 +49,6 @@ ANTENNA_LAT = float(os.getenv("ANTENNA_LAT", 0.0))
 ANTENNA_LON = float(os.getenv("ANTENNA_LON", 0.0))
 MAX_RECEIVER_RANGE_KM = float(os.getenv("MAX_RECEIVER_RANGE_KM", 500.0))
 
-def get_connection_string():
-    return f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD}"
-
 def get_status_summary():
     return {
         "sdr": f"{SDR_HOST}:{SDR_PORT}",

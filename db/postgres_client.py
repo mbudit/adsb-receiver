@@ -43,15 +43,25 @@ class DatabaseClient:
     @db_lock
     def connect(self):
         try:
-            conn_str = config.get_connection_string()
-            self.conn = psycopg2.connect(conn_str)
+            self.conn = psycopg2.connect(
+                host=config.DB_HOST,
+                port=config.DB_PORT,
+                database=config.DB_NAME,
+                user=config.DB_USER,
+                password=config.DB_PASSWORD,
+                connect_timeout=3
+            )
             self.cursor = self.conn.cursor()
             logger.info("Successfully connected to the database.")
             self._ensure_table_exists()
             self.online_status = True
             return True
         except Exception as e:
-            logger.error(f"Failed to connect to the database: {e}")
+            # Mask database password in error message to prevent leakage in logs
+            err_msg = str(e)
+            if config.DB_PASSWORD and config.DB_PASSWORD in err_msg:
+                err_msg = err_msg.replace(config.DB_PASSWORD, "********")
+            logger.error(f"Failed to connect to the database: {err_msg}")
             self.conn = None
             self.cursor = None
             self.online_status = False
