@@ -610,6 +610,8 @@ class MainWindow(QMainWindow):
         if connected:
             self.card_db_status.val_label.setText("Online")
             self.card_db_status.val_label.setStyleSheet("color: #00e676; font-size: 20px; font-weight: bold;")
+            self.refresh_connections_table()
+            self.refresh_senders_table()
         else:
             self.card_db_status.val_label.setText("Offline")
             self.card_db_status.val_label.setStyleSheet("color: #ff5252; font-size: 20px; font-weight: bold;")

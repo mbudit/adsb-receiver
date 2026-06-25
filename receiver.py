@@ -278,6 +278,20 @@ def receive_avr_tcp_server(host, port, stop_event, output_queue, log_callback=No
     if log_callback:
         log_callback("Receiver", f"TCP Server: listening on {host}:{port} ({mode} mode)...")
 
+    # Tracking active connections and caps
+    active_connections = {}
+    connections_lock = threading.Lock()
+    MAX_CONNECTIONS = 5
+
+    def decrement_connection(client_ip):
+        with connections_lock:
+            if client_ip in active_connections:
+                active_connections[client_ip] -= 1
+                if active_connections[client_ip] <= 0:
+                    del active_connections[client_ip]
+                if log_callback:
+                    log_callback("Receiver", f"TCP Server: client disconnected from {client_ip}")
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -288,13 +302,26 @@ def receive_avr_tcp_server(host, port, stop_event, output_queue, log_callback=No
             while not stop_event.is_set():
                 try:
                     conn, addr = sock.accept()
+                    client_ip = addr[0]
+                    
+                    with connections_lock:
+                        total_conns = sum(active_connections.values())
+                        if total_conns >= MAX_CONNECTIONS:
+                            if log_callback:
+                                log_callback("Receiver", f"TCP Server: Connection rejected from {client_ip}:{addr[1]}. Max connection limit ({MAX_CONNECTIONS}) reached.")
+                            conn.close()
+                            continue
+                        
+                        # Increment count
+                        active_connections[client_ip] = active_connections.get(client_ip, 0) + 1
+                    
                     if log_callback:
-                        log_callback("Receiver", f"TCP Server: client connected from {addr[0]}:{addr[1]}")
+                        log_callback("Receiver", f"TCP Server: client connected from {client_ip}:{addr[1]}")
                     
                     # Spawn client reader thread
                     client_thread = threading.Thread(
                         target=_read_tcp_client,
-                        args=(conn, mode, stop_event, output_queue, log_callback),
+                        args=(conn, addr, mode, stop_event, output_queue, log_callback, decrement_connection),
                         daemon=True
                     )
                     client_thread.start()
@@ -304,16 +331,33 @@ def receive_avr_tcp_server(host, port, stop_event, output_queue, log_callback=No
         if log_callback:
             log_callback("Receiver", f"TCP Server bind error on {host}:{port}: {e}")
 
-def _read_tcp_client(conn, mode, stop_event, output_queue, log_callback=None):
+def _read_tcp_client(conn, addr, mode, stop_event, output_queue, log_callback=None, on_close_callback=None):
     beast_parser = BeastParser() if mode == 'BEAST' else None
     text_parser = TextStreamParser(mode=mode) if mode in ('AVR', 'SBS') else None
+    client_ip = addr[0]
+    
+    # Rate limit: Max 200 KB per second
+    MAX_BYTES_PER_SEC = 200 * 1024
+    bytes_received = 0
+    window_start = time.time()
     
     with conn:
         conn.settimeout(1.0)
         while not stop_event.is_set():
             try:
+                now = time.time()
+                if now - window_start >= 1.0:
+                    bytes_received = 0
+                    window_start = now
+                
                 data = conn.recv(4096)
                 if not data:
+                    break
+                
+                bytes_received += len(data)
+                if bytes_received > MAX_BYTES_PER_SEC:
+                    if log_callback:
+                        log_callback("Receiver", f"TCP Server Rate Limit: Exceeded for {client_ip} ({bytes_received} bytes/s). Disconnecting.")
                     break
                 
                 if mode == 'BEAST':
@@ -329,6 +373,9 @@ def _read_tcp_client(conn, mode, stop_event, output_queue, log_callback=None):
                 continue
             except Exception as e:
                 break
+        
+        if on_close_callback:
+            on_close_callback(client_ip)
 
 def receive_avr_udp(host, port, stop_event, output_queue, log_callback=None):
     """Binds to a port listening for incoming UDP packets."""
@@ -339,6 +386,11 @@ def receive_avr_udp(host, port, stop_event, output_queue, log_callback=None):
     beast_parser = BeastParser() if mode == 'BEAST' else None
     text_parser = TextStreamParser(mode=mode) if mode in ('AVR', 'SBS') else None
 
+    # Rate limit: Max 200 KB/sec per IP, and global log throttle to prevent log flooding
+    udp_rates = {}
+    MAX_UDP_BYTES_PER_SEC = 200 * 1024
+    log_throttle = {}
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -348,6 +400,29 @@ def receive_avr_udp(host, port, stop_event, output_queue, log_callback=None):
             while not stop_event.is_set():
                 try:
                     data, addr = sock.recvfrom(65535)
+                    client_ip = addr[0]
+                    now = time.time()
+                    
+                    # Track rate limit
+                    if client_ip not in udp_rates:
+                        udp_rates[client_ip] = [now, 0]
+                    
+                    w_start, w_bytes = udp_rates[client_ip]
+                    if now - w_start >= 1.0:
+                        w_start = now
+                        w_bytes = 0
+                    
+                    w_bytes += len(data)
+                    udp_rates[client_ip] = [w_start, w_bytes]
+                    
+                    if w_bytes > MAX_UDP_BYTES_PER_SEC:
+                        last_log = log_throttle.get(client_ip, 0)
+                        if now - last_log >= 10.0:  # warn at most once every 10s per IP
+                            log_throttle[client_ip] = now
+                            if log_callback:
+                                log_callback("Receiver", f"UDP Server Rate Limit: Exceeded for {client_ip} ({w_bytes} bytes/s). Dropping packet.")
+                        continue
+                    
                     if mode == 'BEAST':
                         msgs = beast_parser.feed(data)
                         for msg in msgs:

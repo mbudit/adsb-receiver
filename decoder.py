@@ -99,6 +99,46 @@ class ADSBDecoder(QThread):
                     if res and res.get("icao"):
                         icao = res["icao"]
                         
+                        # Validate ICAO code format (6 hex characters)
+                        import re
+                        if not isinstance(icao, str) or not re.fullmatch(r"[0-9a-fA-F]{6}", icao):
+                            logger.warning(f"Invalid ICAO code discarded: {icao}")
+                            continue
+
+                        # Validate latitude boundaries [-90.0, 90.0]
+                        if 'latitude' in res and res['latitude'] is not None:
+                            if not (-90.0 <= res['latitude'] <= 90.0):
+                                logger.warning(f"Invalid latitude discarded for {icao}: {res['latitude']}")
+                                res.pop('latitude', None)
+                                
+                        # Validate longitude boundaries [-180.0, 180.0]
+                        if 'longitude' in res and res['longitude'] is not None:
+                            if not (-180.0 <= res['longitude'] <= 180.0):
+                                logger.warning(f"Invalid longitude discarded for {icao}: {res['longitude']}")
+                                res.pop('longitude', None)
+
+                        # Validate altitude boundaries [-2000, 100000] feet
+                        if 'altitude' in res and res['altitude'] is not None:
+                            if not (-2000 <= res['altitude'] <= 100000):
+                                logger.warning(f"Invalid altitude discarded for {icao}: {res['altitude']}")
+                                res.pop('altitude', None)
+
+                        # Validate speed/velocity boundaries [0, 2000] knots
+                        speed = res.get("groundspeed") or res.get("speed")
+                        if speed is not None:
+                            if not (0 <= speed <= 2000):
+                                logger.warning(f"Invalid speed/velocity discarded for {icao}: {speed}")
+                                res.pop('groundspeed', None)
+                                res.pop('speed', None)
+
+                        # Validate heading/track boundaries [0, 360] degrees
+                        heading = res.get("track") or res.get("heading")
+                        if heading is not None:
+                            if not (0 <= heading <= 360):
+                                logger.warning(f"Invalid heading/track discarded for {icao}: {heading}")
+                                res.pop('track', None)
+                                res.pop('heading', None)
+                        
                         # Local CPR fallback decoding if global CPR is not ready but coordinates exist raw
                         if 'cpr_lat' in res and 'latitude' not in res and self.antenna_coords:
                             ref_lat, ref_lon = self.antenna_coords

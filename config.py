@@ -20,7 +20,7 @@ DB_HOST = os.getenv("DATABASE_HOST", "localhost")
 DB_PORT = int(os.getenv("DATABASE_PORT", 5432))
 DB_NAME = os.getenv("DATABASE_NAME", "hidrometeorology")
 DB_USER = os.getenv("DATABASE_USER", "hidro_user")
-DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "your_secure_password")
+DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 
 # ADS-B SDR Connection Configurations
 SDR_HOST = os.getenv("ADSB_HOST", "localhost")
