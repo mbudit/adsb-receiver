@@ -29,8 +29,20 @@ SDR_PORT = int(os.getenv("ADSB_PORT", 30002))
 # Application Settings
 BATCH_INTERVAL_SEC = int(os.getenv("BATCH_INTERVAL_SEC", 60))
 UPLOAD_API_URL = os.getenv("UPLOAD_API_URL", "https://bytenusa.cloud/api/v1/adsb/bulk")
-WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST", "0.0.0.0")
+WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST", "127.0.0.1")
 WEB_SERVER_PORT = int(os.getenv("WEB_SERVER_PORT", 8000))
+
+# CORS Configurations
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS if origin.strip()]
+
+# Web Server API Key Authentication
+WEB_SERVER_API_KEY = os.getenv("WEB_SERVER_API_KEY", "").strip()
+IS_API_KEY_AUTO_GENERATED = False
+if not WEB_SERVER_API_KEY:
+    import secrets
+    WEB_SERVER_API_KEY = secrets.token_hex(16)
+    IS_API_KEY_AUTO_GENERATED = True
 
 # Antenna Reference Coordinates & Calibration
 ANTENNA_LAT = float(os.getenv("ANTENNA_LAT", 0.0))
