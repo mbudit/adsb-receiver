@@ -112,8 +112,8 @@ class ADSBApp:
         try:
             self.aggregated_stats["pending_upload_count"] = self.offline_db.get_pending_count()
             self.aggregated_stats["offline_db_size"] = self.offline_db.get_db_file_size()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to fetch offline DB stats: {e}")
             
         self.aggregated_stats["db_online"] = self.db_client.online_status
         return self.aggregated_stats

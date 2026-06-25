@@ -87,8 +87,8 @@ class SDRReceiver(threading.Thread):
                 if self.socket:
                     try:
                         self.socket.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to close socket: {e}")
                     self.socket = None
                 self.connected = False
 
@@ -99,8 +99,8 @@ class SDRReceiver(threading.Thread):
             try:
                 self.socket.shutdown(socket.SHUT_RDWR)
                 self.socket.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to shutdown/close socket: {e}")
             self.socket = None
         logger.info("Receiver stop requested.")
         if self.status_callback:

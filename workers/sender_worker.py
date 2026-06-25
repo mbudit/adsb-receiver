@@ -188,8 +188,8 @@ class SenderWorker(QThread):
         if conn:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to close TCP connection to {host}:{port}: {e}")
             if self.log_callback:
                 self.log_callback("Error", f"TCP rebroadcaster disconnected from {host}:{port}")
 
