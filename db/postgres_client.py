@@ -311,8 +311,20 @@ class DatabaseClient:
                     uploaded = EXCLUDED.uploaded;
             """
 
-            values = [
-                (
+            # Deduplicate on the conflict target. Postgres refuses an
+            # INSERT ... ON CONFLICT DO UPDATE whose VALUES touch the same key
+            # twice ("cannot affect row a second time") and fails the *whole*
+            # batch, so one collision discards every point in it.
+            #
+            # Collisions are routine: the decoder stamps each point with
+            # time.time() read once per loop iteration, and on Windows that
+            # clock only advances about every 15ms, so messages drained in a
+            # burst share a timestamp. Two for the same aircraft collide.
+            #
+            # Last write wins, matching the offline buffer's INSERT OR REPLACE.
+            deduped = {}
+            for t in tracks:
+                deduped[(t["time"], t["icao24"])] = (
                     t["time"],
                     t["icao24"],
                     t["callsign"],
@@ -326,12 +338,16 @@ class DatabaseClient:
                     t.get("distance"),
                     t.get("uploaded", False)
                 )
-                for t in tracks
-            ]
+
+            values = list(deduped.values())
+
+            dropped = len(tracks) - len(values)
+            if dropped:
+                logger.debug(f"Collapsed {dropped} duplicate (time, icao24) point(s) before insert.")
 
             execute_values(self.cursor, query, values)
             self.conn.commit()
-            logger.info(f"Successfully inserted {len(tracks)} track points into database.")
+            logger.info(f"Successfully inserted {len(values)} track points into database.")
             self.online_status = True
             return True
         except Exception as e:

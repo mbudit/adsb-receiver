@@ -634,9 +634,15 @@ class MainWindow(QMainWindow):
         self.card_total_msgs.val_label.setText(f"{stats['total_msgs']:,}")
         self.card_active_skies.val_label.setText(str(stats['active_aircraft_count']))
         
-        # Batch size pending
+        # Tracks persisted = written straight to Postgres by the decoder, plus
+        # those that went via the SQLite buffer and were later synced by the
+        # uploader. The two are disjoint — a point takes one route or the other
+        # — so adding them cannot double count. Counting only the direct writes
+        # made this card read 0 whenever the fallback was carrying the load.
+        # The parenthesised figure is the batch still waiting to be flushed.
         pending = stats.get("batch_size", 0)
-        self.card_db_saves.val_label.setText(f"{stats['db_saves']:,} ({pending})")
+        persisted = stats.get("db_saves", 0) + stats.get("total_sent", 0)
+        self.card_db_saves.val_label.setText(f"{persisted:,} ({pending})")
         
         # Sync and Forwarder counts
         pending_buf = stats.get("pending_upload_count", 0)

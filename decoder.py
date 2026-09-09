@@ -4,7 +4,7 @@ import time
 import logging
 import math
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 import pyModeS as pms
 from pyModeS import PipeDecoder
 from db import OfflineDatabase
@@ -104,6 +104,13 @@ class ADSBDecoder(QThread):
                         if not isinstance(icao, str) or not re.fullmatch(r"[0-9a-fA-F]{6}", icao):
                             logger.warning(f"Invalid ICAO code discarded: {icao}")
                             continue
+
+                        # Normalise case at the entry point. The validation above
+                        # accepts either case, and pyModeS returns uppercase, so
+                        # without this the same airframe is written under two
+                        # spellings and its history splits in two. The SBS parse
+                        # path already lowercases; this is the decode path.
+                        icao = icao.lower()
 
                         # Validate latitude boundaries [-90.0, 90.0]
                         if 'latitude' in res and res['latitude'] is not None:
@@ -284,7 +291,11 @@ class ADSBDecoder(QThread):
                                 self.stats["decoded_positions"] += 1
                                 
                             track_point = {
-                                "time": datetime.fromtimestamp(current_time),
+                                # Timezone-aware UTC. A naive fromtimestamp() returns
+                                # *local* time, which psycopg2 hands to a timestamptz
+                                # column as though it were already UTC — storing every
+                                # point one whole UTC offset in the future.
+                                "time": datetime.fromtimestamp(current_time, tz=timezone.utc),
                                 "icao24": icao,
                                 "callsign": tp_callsign,
                                 "lat": res["latitude"],
